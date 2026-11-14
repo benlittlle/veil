@@ -29,7 +29,23 @@ final class AppModel: ObservableObject {
 
     @Published var diskAccessProblem: String?
     @Published var conversations: [Conversation] = []
-    @Published var state = PermissionState() { didSet { updateGlyph() } }
+    @Published var state = PermissionState() { didSet { updateGlyph(); scheduleShareEnd() } }
+    private var shareTimer: Timer?, shareTimerTarget: Date?
+
+    /// Wakes once, exactly when the next time-limited share ends, so the screen catches up without
+    /// polling. Every request checks expiry on its own anyway; this is only for the UI and the purge.
+    private func scheduleShareEnd() {
+        let next = state.chats.values.compactMap(\.expires).filter { $0 > Date() }.min()
+        guard next != shareTimerTarget else { return }
+        shareTimer?.invalidate(); shareTimer = nil; shareTimerTarget = next
+        guard let next else { return }
+        let t = Timer(fire: next.addingTimeInterval(0.5), interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.shareTimerTarget = nil; self?.gate.expireShares(); self?.reload() }
+        }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        shareTimer = t
+    }
     @Published var integrity: PermissionStore.Integrity = .ok
     @Published var log: [LogEntry] = []
     @Published var drafts: [Draft] = []
@@ -303,6 +319,7 @@ final class AppModel: ObservableObject {
             let paths = try! DemoData.build(at: supportDir.appendingPathComponent("fixture"))
             try? DemoData.addFilterExamples(db: paths.db)
             watcher = DatabaseWatcher(databasePath: paths.db.path)
+            try? DemoData.addAgedHistory(db: paths.db)
             gate = Gate(
                 permissions: PermissionStore(url: supportDir.appendingPathComponent("permissions.json"), secrets: MemorySecretStore()),
                 log: AccessLog(url: nil), contacts: StaticContacts(DemoData.contacts), sender: RecordingSender(),
@@ -345,6 +362,9 @@ final class AppModel: ObservableObject {
         gate.onSettingsRequested = { [weak self] r in Task { @MainActor in self?.syncOutbox(); self?.onSettingsRequested?(r) } }
         gate.onSettingsApplied = { [weak self] r in Task { @MainActor in self?.notifySettingsChange(r) } }
         gate.onSettingsChange = { [weak self] in Task { @MainActor in self?.settingsChanged() } }
+        gate.onSharingEnded = { [weak self] _ in Task { @MainActor in self?.refreshIntegrity(); self?.syncOutbox() } }
+        // Shares whose time ran out while Veil was closed (or the Mac asleep) are locked before anything else.
+        gate.expireShares()
         preferences.onChange = { [weak self] in Task { @MainActor in self?.syncPreferences() } }
         autoSendHistory = gate.autoSends.all
         webhook.log.onAppend = { [weak self] in Task { @MainActor in self?.webhookLog = self?.webhook.log.all ?? [] } }
@@ -412,6 +432,7 @@ final class AppModel: ObservableObject {
                 self?.reload(); self?.gate.pruneFinishedSends()
                 // Settings requests nobody answered expire; take them off the screen.
                 self?.gate.expireSettingsRequests()
+                self?.gate.expireShares()
                 self?.refreshFilterStatus(); self?.warmFilter()
             }
         }
@@ -477,19 +498,39 @@ final class AppModel: ObservableObject {
 
     func binding(_ id: String, _ key: WritableKeyPath<ChatAccess, Bool>) -> Binding<Bool> {
         Binding(get: { self.access(id)[keyPath: key] },
-                set: { v in
-                    var a = self.access(id)
-                    a.set(key, v)   // turning Send off also turns auto-send off; turning it back on never revives it
-                    self.setAccess(a, for: id)
-                })
+                // Turning Send off also turns auto-send off; turning it back on never revives it. Only this
+                // switch changes, so the time limit and everything else stay as they are.
+                set: { v in self.setSwitches([key: v], for: id) })
     }
 
     func setAccess(_ a: ChatAccess, for id: String) { save { try self.gate.setAccess(a, for: id) } }
-    func setAutoSend(_ on: Bool, for id: String) {
-        var a = access(id); a.set(\.autoSend, on)
-        setAccess(a, for: id)
-        if a.autoSend && autoSendNotify { requestNotifications() }
+    /// Flips switches on the live settings. A duration picked while nothing was shared starts with them.
+    func setSwitches(_ values: [WritableKeyPath<ChatAccess, Bool>: Bool], for id: String) {
+        let start = pendingShareFor[id]
+        save { try self.gate.setSwitches(values, for: id, startFor: start) }
+        if access(id).hasAnySwitch { pendingShareFor[id] = nil }
     }
+    func setAutoSend(_ on: Bool, for id: String) {
+        setSwitches([\.autoSend: on], for: id)
+        if access(id).autoSend && autoSendNotify { requestNotifications() }
+    }
+
+    // MARK: History and time limits (UI only; the assistant asks through the settings tools)
+
+    /// "For:" picked on a chat that isn't shared yet. Applied when the first switch goes on.
+    @Published var pendingShareFor: [String: ShareDuration] = [:]
+    func setHistory(_ w: HistoryWindow, for id: String) { save { try self.gate.setHistory(w, for: id) } }
+    /// A new end time counted from now (Always removes it).
+    func shareFor(_ d: ShareDuration, for id: String) {
+        let end = d.expiry(from: Date())
+        save { try self.gate.setShareExpiry(end, for: id) }
+    }
+    /// Pushes the end time back (from whichever is later, now or the current end).
+    func extendShare(by seconds: TimeInterval, for id: String) {
+        let from = max(Date(), access(id).expires ?? Date())
+        save { try self.gate.setShareExpiry(from.addingTimeInterval(seconds), for: id) }
+    }
+    func endSharing(_ id: String) { save { try self.gate.endSharing(id) }; syncOutbox() }
     func setAutoSendStopped(_ stopped: Bool) { save { try self.gate.setAutoSendStopped(stopped) } }
     func setAutoSendLimit(_ l: AutoSendLimit) { save { try self.gate.setAutoSendLimit(l) } }
     var autoSendChats: [Conversation] { conversations.filter { let a = access($0.id); return a.send && a.autoSend && !a.hidden } }
