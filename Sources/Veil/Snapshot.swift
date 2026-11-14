@@ -56,6 +56,31 @@ enum Snapshot {
         model.setAccess(ChatAccess(activity: true), for: DemoData.ID.therapist)
         render(MainView(pane: .chats, selectedChat: DemoData.ID.therapist), size: CGSize(width: 960, height: 800), dark: false, to: dir.appendingPathComponent("chats-activity.png"), model: model)
         render(MainView(pane: .chats, selectedChat: DemoData.ID.therapist), size: CGSize(width: 960, height: 800), dark: true, to: dir.appendingPathComponent("chats-activity-dark.png"), model: model)
+        // History and time limits: Mom shares the last 7 days, for 45 more minutes.
+        model.setHistory(.week, for: DemoData.ID.mom)
+        model.extendShare(by: 45 * 60 - 20, for: DemoData.ID.mom)
+        for dark in [false, true] {
+            render(MainView(pane: .chats, selectedChat: DemoData.ID.mom), size: CGSize(width: 960, height: 900), dark: dark,
+                   to: dir.appendingPathComponent("chats-time-limit\(dark ? "-dark" : "").png"), model: model)
+        }
+        // A private chat about to be shared: only messages from then on, until midnight.
+        model.setHistory(.sinceShared, for: DemoData.ID.family)
+        model.pendingShareFor[DemoData.ID.family] = .tonight
+        render(MainView(pane: .chats, selectedChat: DemoData.ID.family), size: CGSize(width: 960, height: 900), dark: false,
+               to: dir.appendingPathComponent("chats-share-for.png"), model: model)
+        // When the time runs out: locked, and logged. (Climbing's limit ran out; Mom's was ended by hand.)
+        try? g.permissions.update { $0.chats[DemoData.ID.climbing]?.expires = Date().addingTimeInterval(-5) }
+        _ = g.expireShares()
+        model.endSharing(DemoData.ID.mom)
+        model.log = g.log.all
+        render(ActivityView().background(Theme.window), size: CGSize(width: 760, height: 420), dark: false, to: dir.appendingPathComponent("activity-share-ended.png"), model: model)
+        model.pendingShareFor[DemoData.ID.family] = nil
+        model.setHistory(.all, for: DemoData.ID.family)
+        model.setHistory(.all, for: DemoData.ID.mom)
+        model.setAccess(DemoData.demoAccess[DemoData.ID.mom]!, for: DemoData.ID.mom)
+        model.setAccess(DemoData.demoAccess[DemoData.ID.climbing]!, for: DemoData.ID.climbing)
+        model.setAutoSend(true, for: DemoData.ID.mom)
+        model.log = g.log.all
         // Assistant can change settings: Ask me, with one request waiting; then Apply directly.
         model.setAgentSettings(.ask)
         _ = g.call(tool: "change_chat_settings", arguments: ["chat_id": .string(DemoData.ID.alex), "send": true, "auto_send": true], client: "Assistant")
