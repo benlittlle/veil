@@ -21,7 +21,7 @@ your click.
 - **Everything starts off.** Every chat, including new ones, stays locked until you open it up.
 - **One switch at a time.** Per chat: read, see activity only (when, not what), draft, send with your OK, photos. Hidden chats don't exist as far as the assistant can tell.
 - **You approve every send**, unless you turn on rate-limited auto-send for a specific chat.
-- **The assistant can't change any of this.** No tool exists for it, and the settings file is signed.
+- **The assistant can't change any of this,** unless you choose *Ask me* (you approve each change) or *Apply directly* in Settings. It's off by default, and the settings file is signed.
 - **On your Mac only.** Veil reads Messages read-only, can filter cards, codes, passwords and sensitive topics on-device (including in photos), and logs every request.
 - **Fails closed.** Anything Veil can't check is withheld.
 
@@ -71,6 +71,7 @@ Open a chat in Veil, flip on what you want to share, and ask something like
 - Once the assistant has seen a message, Veil can't take it back.
 - The content filter lowers risk but can miss things. Only *Read* off is certain.
 - Auto-send trusts the assistant; a message it reads could try to trick it. Use it for low-stakes chats.
+- The same goes for letting it change settings directly: a message could trick it into opening up chats or turning on auto-send. *Ask me* is the safer choice.
 - Anything on your Mac with Full Disk Access can read Messages directly. Veil only helps if your assistant doesn't have it.
 
 ## More

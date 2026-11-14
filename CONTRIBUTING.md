@@ -31,7 +31,10 @@ VEIL_EVAL=1 swift test --filter PhotoEval    # photo checks: recall, false withh
 - **Every content path goes through `Gate`.** A new MCP tool or field needs a policy check, the content
   filter for filtered chats, a log entry without message text, and a case in `LeakTests` proving
   `SECRET` doesn't come back.
-- **No MCP tool may change permissions,** filter settings or webhook settings. Those stay UI-only.
+- **No MCP tool may change permissions,** filter settings or webhook settings, with one exception: the settings tools in
+  `GateSettings.swift`, which exist only while the user sets *Assistant can change settings* to Ask me or Apply directly.
+  Anything new they can reach needs strict validation, a plain-language prompt line, a log entry and tests in
+  `AgentSettingsTests`. The mode itself, hidden chats, the webhook, HTTP and keys stay UI-only.
 - **Fail closed.** Errors, timeouts, unknown formats and "unsure" answers withhold.
 - **On-device only.** No network calls with message content, no server-side models.
 - Keep the README short; details go in [docs/guide.md](docs/guide.md) and
@@ -66,6 +69,8 @@ Sources/VeilCore/          everything that touches data or enforces policy (no U
   Gate.swift               the policy: every MCP tool, filtering, logging, purge-on-revoke
   MessagesStore.swift      read-only chat.db queries, attributedBody text extraction
   Permissions.swift        per-chat settings, HMAC signing, Keychain key
+  AgentSettings.swift      what the assistant may change (Ask me / Apply directly): parsing, validation, prompt lines
+  GateSettings.swift       the settings tools and the approval flow
   MCPServer.swift          JSON-RPC / MCP protocol and tool schemas
   Transports.swift         Unix socket server, optional loopback HTTP
   Outbox.swift             drafts, send requests, AppleScript sender
