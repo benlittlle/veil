@@ -45,11 +45,12 @@ public struct ClientCheck: Codable, Equatable, Sendable, Identifiable {
 
     public var canBypass: Bool { reach == .readable }
 
-    /// The one-line warning or status shown in the menu bar, Connect and Setup & safety.
+    /// One neutral line for the menu bar, Connect and Setup & safety. Many agent setups run with
+    /// Full Disk Access on purpose, so this states the fact; it isn't an alarm.
     public var headline: String {
         switch reach {
-        case .readable: return "\(name) can read Messages without Veil"
-        case .blocked: return "\(name) can only reach Messages through Veil"
+        case .readable: return "\(name) runs with Full Disk Access"
+        case .blocked: return "\(name) goes through Veil for Messages"
         case .cantCheckHTTP, .cantCheckOldRelay: return "Can't check \(name)"
         }
     }
@@ -57,15 +58,45 @@ public struct ClientCheck: Codable, Equatable, Sendable, Identifiable {
     public var detail: String {
         switch reach {
         case .readable:
-            return "The app it runs in has Full Disk Access, so it can open your Messages database directly and skip every switch in Veil."
+            return "So it could read Messages directly. Veil's limits only apply to what it asks Veil for."
         case .blocked:
-            return "Checked when it connected: the app it runs in can't open your Messages database."
+            return "Checked when it connected: the app it runs in can't open the Messages database itself."
         case .cantCheckHTTP:
-            return "It connects over the local web address, so Veil can't see which app it runs in. Make sure that app isn't in the Full Disk Access list."
+            return "It connects over the local web address, so Veil can't tell whether the app it runs in has Full Disk Access."
         case .cantCheckOldRelay:
             return "It connected through an older relay that doesn't report this. Restart it after updating Veil to check."
         }
     }
+
+    /// Status line once the user has said they know.
+    public static let acknowledgedLine = "Has Full Disk Access (acknowledged)"
+}
+
+/// "I understand, don't warn me again", per assistant name. Not security-critical (it only quiets a
+/// notice), so it lives in UserDefaults. A check that comes back *without* Full Disk Access clears
+/// it, so if the assistant later has it again, the notice returns.
+public final class BypassAcknowledgements: @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let key: String
+
+    public init(defaults: UserDefaults = .standard, key: String = "acknowledgedFullDiskAccess") {
+        self.defaults = defaults; self.key = key
+    }
+
+    private var names: Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
+    private func save(_ n: Set<String>) { defaults.set(n.sorted(), forKey: key) }
+
+    public func isAcknowledged(_ name: String) -> Bool { names.contains(name) }
+    public func acknowledge(_ name: String) { save(names.union([name])) }
+    public func unacknowledge(_ name: String) { save(names.subtracting([name])) }
+
+    /// Called for every new check. "Can't check" results leave the acknowledgement alone.
+    public func update(for check: ClientCheck) {
+        if check.reach == .blocked, isAcknowledged(check.name) { unacknowledge(check.name) }
+    }
+
+    /// Readable and not acknowledged: show the notice.
+    public func needsNotice(_ c: ClientCheck) -> Bool { c.canBypass && !isAcknowledged(c.name) }
 }
 
 /// Remembers the last check per assistant name, so a warning stays visible after it disconnects.

@@ -119,6 +119,13 @@ enum Snapshot {
             render(MainView(pane: .connect), size: CGSize(width: 960, height: 1100), dark: dark, to: dir.appendingPathComponent("connect-bypass\(suffix).png"), model: model)
             render(MenuBarView(openMain: { _ in }), size: nil, dark: dark, to: dir.appendingPathComponent("menu-bypass\(suffix).png"), model: model)
         }
+        render(BypassNotice(expanded: true).padding(20).frame(width: 640).background(Theme.window), size: nil, dark: false,
+               to: dir.appendingPathComponent("notice-expanded.png"), model: model)
+        // After "I understand": a quiet status line instead of the notice.
+        model.acknowledge(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        render(MainView(pane: .setup), size: CGSize(width: 960, height: 1300), dark: false, to: dir.appendingPathComponent("setup-acknowledged.png"), model: model)
+        render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-acknowledged.png"), model: model)
+        model.unacknowledge(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
         for c in model.clientCheckStore.all { model.forgetClientCheck(c.name) }
         model.clientChecks = []
         model.clients = ["Assistant"]

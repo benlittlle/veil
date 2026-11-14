@@ -23,6 +23,17 @@ public struct FullDiskAccessGrant: Equatable, Sendable, Identifiable {
     /// Assistants usually run in one of these, so they're shown first and highlighted.
     public var isLikelyAssistantHost: Bool { kind != .other }
 
+    /// Whether this app is probably the one an assistant with this client name runs in
+    /// ("claude-ai" → Claude, "cursor-vscode" → Cursor, "Grok Bot" → Grok Bot).
+    public func matches(clientName: String) -> Bool {
+        func words(_ s: String) -> [String] {
+            s.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 }
+        }
+        let mine = words(name), theirs = Set(words(clientName))
+        guard let first = mine.first else { return false }
+        return theirs.contains(first)
+    }
+
     public init(client: String, isPath: Bool, name: String, kind: Kind) {
         self.client = client; self.isPath = isPath; self.name = name; self.kind = kind
     }

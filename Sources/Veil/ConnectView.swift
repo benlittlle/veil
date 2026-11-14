@@ -31,10 +31,10 @@ struct ConnectView: View {
                     if let e = model.serverError { Text(e).font(.system(size: 12)).foregroundStyle(Theme.caution) }
                 }
 
-                BypassWarningCard()
+                BypassNotice()
 
                 step(1, "Turn off \(model.assistantName)'s own Messages access",
-                     "Otherwise it can still read everything without asking Veil. Also make sure \(model.assistantName) doesn't have Full Disk Access.")
+                     "Otherwise it can still read everything without asking Veil. The same goes if the app it runs in has Full Disk Access; Veil tells you when it notices.")
 
                 VStack(alignment: .leading, spacing: 10) {
                     step(2, "Add Veil as an MCP server", "Paste this into \(model.assistantName)'s MCP settings. It launches a tiny relay that only talks to this app.")
@@ -104,7 +104,7 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 24) {
                 PaneHeader(title: "Setup & safety", subtitle: "What Veil needs, and how it keeps private chats private.")
 
-                BypassWarningCard()
+                BypassNotice()
 
                 Card {
                     check(model.diskAccessProblem == nil, "Full Disk Access",
@@ -147,7 +147,7 @@ struct SetupView: View {
                     Card(padding: 18) {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Anything \(model.assistantName) has already seen may be kept in its own conversation history. Veil can't reach in and delete that.")
-                            Text("Any app with Full Disk Access can read Messages directly. Keep that list short, and leave \(model.assistantName) off it. Veil checks each assistant when it connects and warns you here if it could skip the gate; assistants on the local web address can't be checked.")
+                            Text("Any app with Full Disk Access can read Messages directly, and Veil's limits don't apply to that. Veil checks each assistant when it connects and tells you here if the app it runs in has Full Disk Access. Assistants on the local web address can't be checked.")
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 }

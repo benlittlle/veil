@@ -21,7 +21,7 @@ struct ClientCheckTests {
         #expect(reported.map(\.reach) == [.readable])
         #expect(reported.first?.name == "Grok Bot")
         #expect(h.server.connectedChecks.map(\.reach) == [.readable])
-        #expect(reported.first?.headline == "Grok Bot can read Messages without Veil")
+        #expect(reported.first?.headline == "Grok Bot runs with Full Disk Access")
         s.close()
         #expect(h.server.connectedChecks.isEmpty)
     }
@@ -168,4 +168,67 @@ final class LockedBox<T>: @unchecked Sendable {
     init(_ v: T) { _value = v }
     var value: T { lock.lock(); defer { lock.unlock() }; return _value }
     func set(_ v: T) { lock.lock(); _value = v; lock.unlock() }
+}
+
+@Suite("Full Disk Access notice")
+struct BypassNoticeTests {
+    func fresh() -> (BypassAcknowledgements, UserDefaults, String) {
+        let suite = "veil-test-acks-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        return (BypassAcknowledgements(defaults: d), d, suite)
+    }
+
+    @Test func wordingIsNeutral() {
+        let c = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
+        #expect(c.headline == "Grok Bot runs with Full Disk Access")
+        #expect(c.detail == "So it could read Messages directly. Veil's limits only apply to what it asks Veil for.")
+        #expect(ClientCheck.acknowledgedLine == "Has Full Disk Access (acknowledged)")
+        for r in [ChatDBReach.readable, .blocked, .cantCheckHTTP, .cantCheckOldRelay] {
+            let text = ClientCheck(name: "X", transport: .relay, reach: r).headline + ClientCheck(name: "X", transport: .relay, reach: r).detail
+            #expect(!text.lowercased().contains("safe"))
+            #expect(!text.lowercased().contains("warning"))
+        }
+    }
+
+    @Test func acknowledgingQuietsOnlyThatAssistant() {
+        let (acks, d, suite) = fresh(); defer { d.removePersistentDomain(forName: suite) }
+        let grok = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
+        let other = ClientCheck(name: "Other", transport: .relay, reach: .readable)
+        #expect(acks.needsNotice(grok) && acks.needsNotice(other))
+        acks.acknowledge("Grok Bot")
+        #expect(!acks.needsNotice(grok))
+        #expect(acks.needsNotice(other))
+        // Kept across launches (same defaults).
+        #expect(BypassAcknowledgements(defaults: d).isAcknowledged("Grok Bot"))
+    }
+
+    @Test func acknowledgementResetsWhenTheCheckGoesFromFalseToTrue() {
+        let (acks, d, suite) = fresh(); defer { d.removePersistentDomain(forName: suite) }
+        acks.acknowledge("Grok Bot")
+        // Can't-check results don't touch it.
+        acks.update(for: ClientCheck(name: "Grok Bot", transport: .http, reach: .cantCheckHTTP))
+        acks.update(for: ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        #expect(acks.isAcknowledged("Grok Bot"))
+        // Without Full Disk Access once, then with it again: the notice comes back.
+        acks.update(for: ClientCheck(name: "Grok Bot", transport: .relay, reach: .blocked))
+        let again = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
+        acks.update(for: again)
+        #expect(acks.needsNotice(again))
+    }
+
+    @Test func blockedAndCantCheckNeverNeedANotice() {
+        let (acks, d, suite) = fresh(); defer { d.removePersistentDomain(forName: suite) }
+        #expect(!acks.needsNotice(ClientCheck(name: "A", transport: .relay, reach: .blocked)))
+        #expect(!acks.needsNotice(ClientCheck(name: "B", transport: .http, reach: .cantCheckHTTP)))
+        #expect(!acks.needsNotice(ClientCheck(name: "C", transport: .relay, reach: .cantCheckOldRelay)))
+    }
+
+    @Test func clientNamesMatchTheAppTheyRunIn() {
+        func app(_ name: String) -> FullDiskAccessGrant { FullDiskAccessGrant(client: "x", isPath: false, name: name, kind: .other) }
+        #expect(app("Claude").matches(clientName: "claude-ai"))
+        #expect(app("Cursor").matches(clientName: "cursor-vscode"))
+        #expect(app("Grok Bot").matches(clientName: "Grok Bot"))
+        #expect(!app("PhotoSync").matches(clientName: "Grok Bot"))
+        #expect(!app("iTerm").matches(clientName: "claude-code"))
+    }
 }

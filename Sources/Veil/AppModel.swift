@@ -37,6 +37,9 @@ final class AppModel: ObservableObject {
     /// Per assistant: could the app it runs in read chat.db without Veil? (See `ClientCheck`.)
     let clientCheckStore: ClientCheckStore
     @Published var clientChecks: [ClientCheck] = []
+    /// "Don't warn me again", per assistant name (UserDefaults; it only quiets a notice).
+    let acknowledgements: BypassAcknowledgements
+    @Published private(set) var acknowledgedVersion = 0
     /// Other apps with Full Disk Access, read from TCC.db. nil when it couldn't be read.
     @Published var fullDiskAccess: [FullDiskAccessGrant]?
     private let tccDatabases: (system: URL, user: URL?)
@@ -265,6 +268,7 @@ final class AppModel: ObservableObject {
                 log: WebhookLog(url: supportDir.appendingPathComponent("webhook-log.jsonl")))
             webhookKey = KeychainString(service: Self.webhookKeyService)
             clientCheckStore = ClientCheckStore(url: supportDir.appendingPathComponent("client-checks.json"))
+            acknowledgements = BypassAcknowledgements()
             tccDatabases = (FullDiskAccessList.systemDatabase, FullDiskAccessList.userDatabase)
             resolveAppName = { Self.appName(bundleID: $0) }
         case .demo:
@@ -287,6 +291,9 @@ final class AppModel: ObservableObject {
                                       log: WebhookLog(url: nil))
             webhookKey = nil
             clientCheckStore = ClientCheckStore(url: nil)
+            let demoDefaults = UserDefaults(suiteName: "io.github.benlittlle.veil.demo-acknowledgements")!
+            demoDefaults.removePersistentDomain(forName: "io.github.benlittlle.veil.demo-acknowledgements")
+            acknowledgements = BypassAcknowledgements(defaults: demoDefaults)
             let tcc = supportDir.appendingPathComponent("fixture-tcc/TCC.db")
             try? DemoData.buildTCC(at: tcc, rows: DemoData.demoFullDiskAccess)
             tccDatabases = (tcc, nil)
@@ -315,7 +322,8 @@ final class AppModel: ObservableObject {
         webhookKeySaved = !(webhookKey?.read() ?? "").isEmpty
         server.onSessionsChange = { [weak self] in Task { @MainActor in self?.clients = self?.server.connectedClients ?? [] } }
         let checks = clientCheckStore
-        server.onClientCheck = { checks.record($0) }
+        let acks = acknowledgements
+        server.onClientCheck = { acks.update(for: $0); checks.record($0) }
         checks.onChange = { [weak self] in Task { @MainActor in self?.clientChecks = checks.all } }
         clientChecks = checks.all
 
@@ -609,11 +617,16 @@ final class AppModel: ObservableObject {
         ClientCheck(name: "Web Helper", transport: .http, reach: .cantCheckHTTP, lastSeen: Date().addingTimeInterval(-7200)),
     ]
 
-    /// Assistants whose app can open chat.db without Veil.
-    var bypassWarnings: [ClientCheck] { clientChecks.filter(\.canBypass) }
-    var likelyHostsWithDiskAccess: [FullDiskAccessGrant] { (fullDiskAccess ?? []).filter(\.isLikelyAssistantHost) }
+    /// Assistants whose app can open chat.db without Veil and that the user hasn't acknowledged.
+    var bypassWarnings: [ClientCheck] { _ = acknowledgedVersion; return clientChecks.filter(acknowledgements.needsNotice) }
+    func isAcknowledged(_ c: ClientCheck) -> Bool { _ = acknowledgedVersion; return acknowledgements.isAcknowledged(c.name) }
+    func acknowledge(_ c: ClientCheck) { acknowledgements.acknowledge(c.name); acknowledgedVersion += 1 }
+    func unacknowledge(_ c: ClientCheck) { acknowledgements.unacknowledge(c.name); acknowledgedVersion += 1 }
     func isConnected(_ c: ClientCheck) -> Bool { clients.contains(c.name) }
     func forgetClientCheck(_ name: String) { clientCheckStore.forget(name) }
+    /// An app in the Full Disk Access list worth pointing out: one a seen assistant probably runs in, or an AI app.
+    func isHighlighted(_ g: FullDiskAccessGrant) -> Bool { g.kind == .ai || connectedHost(g) != nil }
+    func connectedHost(_ g: FullDiskAccessGrant) -> ClientCheck? { clientChecks.first { g.matches(clientName: $0.name) } }
 
     /// Reads who has Full Disk Access (read-only, off the main thread). Hidden if it can't be read.
     func refreshFullDiskAccess(wait: Bool = false) {
@@ -635,8 +648,10 @@ final class AppModel: ObservableObject {
         return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
     }
 
-    static func openFullDiskAccessSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+    static func openFullDiskAccessSettings() { openPrivacy("Privacy_AllFiles") }
+    static func openFilesAndFoldersSettings() { openPrivacy("Privacy_FilesAndFolders") }
+    static func openPrivacy(_ anchor: String) {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!)
     }
 
     // MARK: HTTP
