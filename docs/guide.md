@@ -109,7 +109,7 @@ The assistant is told only that "this chat shares the last 7 days" (in `list_cha
 - While a limit runs, the chat list shows the time left and the chat's page says "Shared for 45 more minutes", with **Extend** (1 more hour, 24 more hours, 7 more days or no time limit) and **End now**.
 - Changing switches, the history window or the filter keeps the end time.
 - When the time is up, the chat is locked: every switch off, auto-send included. Drafts and waiting sends for it are cleared the same way as turning switches off yourself, and *Activity* shows "Sharing with Mom ended, as scheduled". The content filter and history settings are kept for next time.
-- The end time is checked on every request, so it holds even if the Mac was asleep, plus every 10 seconds in the app so the screen catches up, and at launch for anything that ended while Veil was closed.
+- The end time is checked on every request, so it holds even if the Mac was asleep, plus the app wakes once at the end time so the screen catches up, and at launch for anything that ended while Veil was closed.
 
 Both settings live in the signed `permissions.json` with the switches. Files from before they existed read as All and Always.
 
