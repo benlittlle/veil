@@ -3,6 +3,12 @@ import Contacts
 
 public protocol ContactResolver: AnyObject {
     func name(for handle: String) -> String?
+    /// Changes whenever names may have changed, so lists built with them are rebuilt.
+    var generation: Int { get }
+}
+
+extension ContactResolver {
+    public var generation: Int { 0 }
 }
 
 /// Normalizes a phone number or email so "+1 (555) 010-2000" and "5550102000" match.
@@ -24,7 +30,10 @@ public final class StaticContacts: ContactResolver {
 /// Reads names from the macOS Contacts database (needs the Contacts permission).
 public final class SystemContacts: ContactResolver {
     private var table: [String: String] = [:]
+    private var _generation = 0
     private let lock = NSLock()
+
+    public var generation: Int { lock.lock(); defer { lock.unlock() }; return _generation }
 
     public init() {}
 
@@ -49,7 +58,7 @@ public final class SystemContacts: ContactResolver {
             for p in c.phoneNumbers { t[normalizeHandle(p.value.stringValue)] = name }
             for e in c.emailAddresses { t[normalizeHandle(e.value as String)] = name }
         }
-        lock.lock(); table = t; lock.unlock()
+        lock.lock(); table = t; _generation += 1; lock.unlock()
     }
 
     public func name(for handle: String) -> String? {

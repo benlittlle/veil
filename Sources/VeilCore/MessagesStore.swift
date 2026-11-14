@@ -65,6 +65,11 @@ public final class MessagesStore {
         try db.query("SELECT 1 FROM chat LIMIT 1")
     }
 
+    /// Changes whenever another connection (Messages) commits to the database. Reads no tables.
+    public func changeToken() throws -> Int64 {
+        try db.query("PRAGMA data_version").first?.int("data_version") ?? 0
+    }
+
     public func conversations(contacts: ContactResolver) throws -> [Conversation] {
         let chats = try db.query("""
             SELECT c.ROWID AS id, c.guid, c.chat_identifier, c.display_name, c.style,

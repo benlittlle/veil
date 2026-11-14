@@ -82,6 +82,11 @@ public struct PingCoalescer {
     }
 
     public var pendingChats: [String] { Array(pending.keys) }
+
+    /// When the earliest waiting ping may go out, or nil if none is waiting.
+    public var nextDue: Date? {
+        pending.keys.map { lastSent[$0].map { $0.addingTimeInterval(interval) } ?? .distantPast }.min()
+    }
 }
 
 // MARK: - Log
@@ -174,7 +179,8 @@ public final class URLSessionWebhookTransport: NSObject, WebhookTransport, URLSe
 
 /// Watches chat.db for new messages and sends pings: incoming ones for chats with Read or Activity
 /// on, and the user's own for chats with Activity on (when the config allows).
-/// All state lives on one serial queue.
+/// All state lives on one serial queue. It looks when told the database changed (`poke`), when a
+/// coalesced ping falls due, and on a slow fallback timer; with pings off it never wakes.
 public final class WebhookNotifier {
     public let log: WebhookLog
     private let permissions: PermissionStore
@@ -190,6 +196,9 @@ public final class WebhookNotifier {
     private var lastSeen: Int64?
     private var coalescer: PingCoalescer
     private var timer: DispatchSourceTimer?
+    private var fallback: TimeInterval = 30
+    /// A new message's chat link wasn't written yet; look again shortly.
+    private var lookAgainSoon = false
 
     public init(permissions: PermissionStore, openStore: @escaping () throws -> MessagesStore, log: WebhookLog,
                 transport: WebhookTransport = URLSessionWebhookTransport(),
@@ -206,36 +215,61 @@ public final class WebhookNotifier {
             if c == nil || config == nil { lastSeen = nil; coalescer = PingCoalescer(interval: coalescer.interval) }
             config = c
         }
+        // Take the starting point right away, so a message arriving before the next look is still news.
+        queue.async { [self] in if timer != nil { step() } }
     }
 
-    public func start(every seconds: TimeInterval = 2) {
+    /// `fallback`: how often to look without being told of a change, in case a file event was missed.
+    public func start(fallback seconds: TimeInterval = 30) {
         queue.sync {
             guard timer == nil else { return }
+            fallback = seconds
             let t = DispatchSource.makeTimerSource(queue: queue)
-            t.schedule(deadline: .now() + seconds, repeating: seconds, leeway: .milliseconds(500))
-            t.setEventHandler { [weak self] in self?.poll(now: Date()) }
+            t.setEventHandler { [weak self] in self?.step() }
+            t.schedule(deadline: .distantFuture)
             t.resume(); timer = t
         }
+        queue.async { [self] in step() }
     }
 
     public func stop() { queue.sync { timer?.cancel(); timer = nil } }
 
+    /// The database may have changed: look now (if pings are on).
+    public func poke() { queue.async { [self] in if timer != nil, config != nil { step() } } }
+
     /// One polling step. The timer calls this; tests call it directly.
     public func tick(now: Date = Date()) { queue.sync { poll(now: now) } }
 
-    private func poll(now: Date) {
-        guard config != nil else { return }
+    /// Looks, then sets the next wake-up: when a held-back ping falls due, soon if a message was
+    /// half-written, otherwise the fallback. Nothing at all while pings are off.
+    private func step() {
+        guard let timer else { return }
+        let now = Date()
+        let read = poll(now: now)
+        guard config != nil else { timer.schedule(deadline: .distantFuture); return }
+        var wait = fallback
+        // After a failed read (e.g. no Full Disk Access), just wait for the fallback.
+        if read, lookAgainSoon { wait = min(wait, 2) }
+        if read, let due = coalescer.nextDue { wait = min(wait, max(0.05, due.timeIntervalSince(now))) }
+        timer.schedule(deadline: .now() + wait, leeway: wait < fallback ? .milliseconds(250) : .seconds(5))
+    }
+
+    /// Returns false if the database couldn't be read.
+    @discardableResult
+    private func poll(now: Date) -> Bool {
+        guard config != nil else { return true }
+        lookAgainSoon = false
         do {
             let store = try self.store ?? openStore()
             self.store = store
-            guard let since = lastSeen else { lastSeen = try store.maxMessageRowID(); return }
+            guard let since = lastSeen else { lastSeen = try store.maxMessageRowID(); return true }
             let rows = try store.messages(afterRowID: since, limit: 500)
             var newest = since
             var chatNames: [Int64: String]?
             for r in rows {
                 guard let chatRow = r.chatRowID else {
                     // Messages writes the chat link right after the message; wait for it briefly.
-                    if now.timeIntervalSince(r.date) < 30 { break }
+                    if now.timeIntervalSince(r.date) < 30 { lookAgainSoon = true; break }
                     newest = max(newest, r.id); continue
                 }
                 newest = max(newest, r.id)
@@ -250,9 +284,10 @@ public final class WebhookNotifier {
             lastSeen = newest
         } catch {
             store = nil   // e.g. Full Disk Access missing or Messages busy; try again next tick
-            return
+            return false
         }
         for p in coalescer.due(now: now) { deliver(p, attempt: 1) }
+        return true
     }
 
     /// Incoming: Read or Activity. The user's own messages: Activity only, and only if the config allows.

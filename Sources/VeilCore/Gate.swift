@@ -83,10 +83,21 @@ public final class Gate {
         let s = try openStore(); store = s; return s
     }
 
+    /// The chat list (names and participants, never message content). Rebuilt only after Messages
+    /// changed the database or contact names changed; permissions are applied by each caller.
     public func conversations() throws -> [Conversation] {
-        try messagesStore().conversations(contacts: contacts)
+        let store = try messagesStore()
+        let token = try store.changeToken(), names = contacts.generation
+        lock.lock()
+        if let c = chatList, c.token == token, c.names == names { lock.unlock(); return c.convs }
+        lock.unlock()
+        let convs = try store.conversations(contacts: contacts)
             .sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        // Read after the token, so a change in between only makes the next call rebuild.
+        lock.lock(); chatList = (token, names, convs); lock.unlock()
+        return convs
     }
+    private var chatList: (token: Int64, names: Int, convs: [Conversation])?
 
     public var drafts: [Draft] { lock.lock(); defer { lock.unlock() }; return _drafts }
     public var sends: [SendRequest] { lock.lock(); defer { lock.unlock() }; return _sends }
@@ -227,6 +238,10 @@ public final class Gate {
 
     private let warmLock = NSLock()
     private var warming = false
+    /// The background pass's own connection, kept between passes.
+    private var warmStore: MessagesStore?
+    /// What the last background pass saw, and whether every item in it got a verdict.
+    private var lastWarm: (token: Int64, state: PermissionState, engines: String, complete: Bool)?
 
     /// One photo the filter held back (or the user let through), for the user's review screen. Never reachable from MCP.
     public struct PhotoReviewItem: Identifiable, Equatable, Sendable {
@@ -287,31 +302,43 @@ public final class Gate {
 
         let state = permissions.state
         guard !state.paused, permissions.integrity == .ok || permissions.integrity == .firstRun,
-              let store = try? openStore(), let all = try? store.conversations(contacts: contacts) else { return }
+              state.chats.keys.contains(where: { state.filterPolicy(for: $0) != nil }) else { return }
+        guard let store = try? warmStore ?? openStore() else { return }
+        warmStore = store
+        // Skip the pass when nothing it depends on changed since one that finished everything.
+        let engines = "\(filter.usableClassifier?.engineID ?? "-")|\(photos.engineKey ?? "-")"
+        let token = try? store.changeToken()
+        if let token, let last = lastWarm, last.complete, last.token == token, last.state == state, last.engines == engines { return }
+        guard let all = try? store.conversations(contacts: contacts) else { warmStore = nil; return }
+        var complete = true
+        defer { lastWarm = token.map { ($0, state, engines, complete) } }
         let convs = all.filter { !state.access($0.id).hidden }
         let rows = attachmentRows(convs, state)
         if pictures {
             // Photos first: they're slower, and the text pass below waits on the model.
             for c in convs {
                 let a = state.access(c.id)
-                guard a.attachments, let p = state.filterPolicy(for: c.id), p.attachments == .check,
-                      let items = try? store.attachments(inChats: c.chatRowIDs, limit: photosPerChat) else { continue }
-                photos.enqueue(items.compactMap { info, _ in
+                guard a.attachments, let p = state.filterPolicy(for: c.id), p.attachments == .check else { continue }
+                guard let items = try? store.attachments(inChats: c.chatRowIDs, limit: photosPerChat) else { complete = false; continue }
+                let requests = items.compactMap { info, _ -> PhotoChecker.Request? in
                     guard attachmentReachable(info.id, store, rows), let url = store.safeFileURL(for: info),
                           PhotoChecker.isPhoto(mimeType: info.mimeType, url: url) else { return nil }
                     return PhotoChecker.Request(id: info.id, url: url)
-                })
+                }
+                if photos.check(requests, timeout: 0).count < requests.count { complete = false }
             }
         }
         for c in convs where text {
             let a = state.access(c.id)
-            guard a.read || a.waiting || a.attachments, let p = state.filterPolicy(for: c.id), p.needsModel,
-                  let msgs = try? store.messages(inChats: c.chatRowIDs, limit: perChat) else { continue }
+            guard a.read || a.waiting || a.attachments, let p = state.filterPolicy(for: c.id), p.needsModel else { continue }
+            guard let msgs = try? store.messages(inChats: c.chatRowIDs, limit: perChat) else { complete = false; continue }
             let skip = Set(a.filterAllowedMessages)
             let items = msgs.filter { !skip.contains($0.id) }.map { filterItem($0, store, rows) }
             let chunk = filter.batchSize * 2
             for start in stride(from: 0, to: items.count, by: chunk) {
-                filter.classify(Array(items[start..<min(start + chunk, items.count)]), timeout: 60)
+                let part = Array(items[start..<min(start + chunk, items.count)])
+                let judged = filter.classify(part, timeout: 60)
+                if judged.count < part.filter({ !$0.modelText.isEmpty }).count { complete = false }
             }
         }
     }

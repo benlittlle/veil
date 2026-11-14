@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     let server: MCPServer
     /// New-message pings. Configured only from Settings; nothing in MCP can reach it.
     let webhook: WebhookNotifier
+    /// Wakes the pings, the chat list and the filter when Messages writes to chat.db.
+    private let watcher: DatabaseWatcher
+    private var changePending = false
     private let webhookKey: KeychainString?
     let supportDir: URL
     let socketPath: String
@@ -252,6 +255,7 @@ final class AppModel: ObservableObject {
             let contacts = SystemContacts()
             systemContacts = contacts
             let home = fm.homeDirectoryForCurrentUser
+            watcher = DatabaseWatcher(databasePath: home.appendingPathComponent("Library/Messages/chat.db").path)
             gate = Gate(
                 permissions: PermissionStore(url: supportDir.appendingPathComponent("permissions.json"), secrets: KeychainSecretStore(service: Self.permissionsKeyService)),
                 log: AccessLog(url: supportDir.appendingPathComponent("access-log.jsonl")),
@@ -295,6 +299,7 @@ final class AppModel: ObservableObject {
             systemContacts = nil
             let paths = try! DemoData.build(at: supportDir.appendingPathComponent("fixture"))
             try? DemoData.addFilterExamples(db: paths.db)
+            watcher = DatabaseWatcher(databasePath: paths.db.path)
             gate = Gate(
                 permissions: PermissionStore(url: supportDir.appendingPathComponent("permissions.json"), secrets: MemorySecretStore()),
                 log: AccessLog(url: nil), contacts: StaticContacts(DemoData.contacts), sender: RecordingSender(),
@@ -383,26 +388,48 @@ final class AppModel: ObservableObject {
         } catch { serverError = error.localizedDescription }
         applyHTTP()
         applyWebhook()
+        // New messages: Messages writing to chat.db wakes the pings right away, and the chat list
+        // and the filter's background pass shortly after.
+        let webhook = self.webhook
+        watcher.onChange { [weak self] in
+            webhook.poke()
+            Task { @MainActor in self?.databaseChanged() }
+        }
+        watcher.start()
         webhook.start()
         refreshFullDiskAccess()
-        // Pick up new chats while the app is running.
-        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reload(); self?.gate.pruneFinishedSends() }
-        }
-        // Settings requests nobody answered expire; take them off the screen soon after.
-        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.gate.expireSettingsRequests() }
-        }
         // Content filter: judge new messages in filtered chats ahead of time, on this Mac.
         refreshFilterStatus()
         gate.photos.prewarm()
         warmFilter()
-        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshFilterStatus(); self?.warmFilter() }
+        // A slow fallback in case a file event is missed, and for the model becoming available.
+        // Each step does nothing when nothing changed.
+        let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.reload(); self?.gate.pruneFinishedSends()
+                // Settings requests nobody answered expire; take them off the screen.
+                self?.gate.expireSettingsRequests()
+                self?.refreshFilterStatus(); self?.warmFilter()
+            }
         }
+        t.tolerance = 5
+        RunLoop.main.add(t, forMode: .common)
     }
 
-    func stop() { socket?.stop(); http?.stop(); webhook.stop() }
+    func stop() { watcher.stop(); socket?.stop(); http?.stop(); webhook.stop() }
+
+    /// Messages wrote to chat.db. Writes come in bursts, so this runs at most every 2 seconds.
+    private func databaseChanged() {
+        guard !changePending else { return }
+        changePending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.changePending = false
+                self.reload(); self.warmFilter()
+            }
+        }
+    }
 
     func reload() {
         // Pick up a Contacts permission granted later in System Settings.
@@ -433,10 +460,11 @@ final class AppModel: ObservableObject {
         } catch { return (nil, "\(error)", nil) }
     }
 
+    /// Only real changes are published, so open views don't redraw for nothing.
     private func apply(_ r: LoadResult) {
-        diskAccessProblem = r.openError
-        readProblem = r.readError
-        if let c = r.convs { conversations = c }
+        if diskAccessProblem != r.openError { diskAccessProblem = r.openError }
+        if readProblem != r.readError { readProblem = r.readError }
+        if let c = r.convs, c != conversations { conversations = c }
     }
 
     // MARK: Permissions (UI only)
@@ -544,7 +572,11 @@ final class AppModel: ObservableObject {
     /// The settings a chat uses (its own, or the default profile).
     func filterPolicy(_ id: String) -> FilterPolicy { access(id).filterPolicy ?? state.effectiveFilterProfile }
 
-    func refreshFilterStatus() { filterStatus = gate.filter.modelStatus; photoStatus = gate.photos.status }
+    func refreshFilterStatus() {
+        let text = gate.filter.modelStatus, photo = gate.photos.status
+        if filterStatus != text { filterStatus = text }
+        if photoStatus != photo { photoStatus = photo }
+    }
 
     private func filterChanged(_ id: String?) {
         if let id { loadFilterReview(id) } else { for id in filterReview.keys { loadFilterReview(id) } }
