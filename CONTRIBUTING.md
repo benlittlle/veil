@@ -51,6 +51,9 @@ Tests never touch your real Messages data or send anything. `DemoData.swift` bui
 chat.db in which every private message contains the word `SECRET`. The leak tests run every
 tool against every chat and check that `SECRET` never comes back, including through search,
 reply threads, shared attachments, group membership, path traversal and tapbacks.
+`DemoData.addAgedHistory` adds messages and photos at known ages (2, 10 and 45 days), each marked
+`AGED1D`, `AGED7D` or `AGED30D`; the history tests run every tool with each window and check no marker
+outside it comes back. The time-limit tests move the gate's clock instead of waiting.
 The content-filter tests plant card numbers, codes, bank details, IDs, passwords, keys, swearing and
 sensitive topics in a fixture chat and check that none of it comes back from any tool, search, log
 or ping. They use a fake classifier (including one that errors, hangs, refuses or answers "unsure").

@@ -20,6 +20,7 @@ your click.
 
 - **Everything starts off.** Every chat, including new ones, stays locked until you open it up.
 - **One switch at a time.** Per chat: read, see activity only (when, not what), draft, send with your OK, photos. Hidden chats don't exist as far as the assistant can tell.
+- **Share less, for less time.** Per chat, limit how far back it can read (24 hours, 7 or 30 days, or only since you shared it) and end sharing on its own after an hour, tonight or a week.
 - **You approve every send**, unless you turn on rate-limited auto-send for a specific chat.
 - **The assistant can't change any of this,** unless you choose *Ask me* (you approve each change) or *Apply directly* in Settings. It's off by default, and the settings file is signed.
 - **On your Mac only.** Veil reads Messages read-only, can filter cards, codes, passwords and sensitive topics on-device (including in photos), and logs every request.
