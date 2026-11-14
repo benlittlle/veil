@@ -63,6 +63,8 @@ enum Theme {
     static let caution = Color(nsColor: dynamic(light: (0.72, 0.36, 0.22), dark: (0.95, 0.6, 0.45)))
     static let calm = Color(nsColor: dynamic(light: (0.33, 0.55, 0.42), dark: (0.55, 0.78, 0.62)))
     static let bubble = Color(nsColor: .systemBlue)
+    /// Text on an accent-filled button. The dark-mode accents are light, so they take dark text.
+    static let onAccent = Color(nsColor: dynamic(light: (1, 1, 1), dark: (0.1, 0.1, 0.11)))
 
     static func dynamic(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
         NSColor(name: nil) { appearance in
@@ -135,7 +137,7 @@ struct ToggleRow: View {
                 Text(title).font(.system(size: 13, weight: .medium))
                 Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
+            .frame(maxWidth: .infinity, alignment: .leading)   // the text takes the width, not a spacer
             Toggle("", isOn: $isOn).toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                 .accessibilityLabel(title)
         }
@@ -168,7 +170,7 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 14).padding(.vertical, 7)
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.onAccent)
             .background(Theme.accent.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
