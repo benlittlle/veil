@@ -10,8 +10,9 @@ public struct ToolResult: Sendable {
 }
 
 /// The gate. Every MCP tool call goes through `call(tool:arguments:client:)`, which reads the
-/// current permissions, filters at the source, and logs what happened. There is intentionally
-/// no tool here that changes permissions; those methods are only called by the menu bar UI.
+/// current permissions, filters at the source, and logs what happened. Permission changes are made
+/// by the menu bar UI. The only MCP path to them is the settings tools in GateSettings.swift, which
+/// exist only while the user has set "Assistant can change settings" to Ask me or Apply directly.
 public final class Gate {
     public let permissions: PermissionStore
     public let log: AccessLog
@@ -23,9 +24,21 @@ public final class Gate {
     private let sender: MessageSender
     private let openStore: () throws -> MessagesStore
     private var store: MessagesStore?
-    private let lock = NSLock()
+    let lock = NSLock()
     private var _drafts: [Draft] = []
     private var _sends: [SendRequest] = []
+    /// Settings changes the assistant asked for (Ask me, or allowing codes). Guarded by `lock`.
+    var _settingsRequests: [SettingsRequest] = []
+    /// App preferences outside the signed file (assistant name, pings). The app passes its own.
+    public let preferences: AppPreferences
+    /// How long a settings request waits for the user before it expires.
+    public var settingsRequestLifetime: TimeInterval = 600
+    /// Called (on any thread) when the assistant asks for a settings change that needs the user's OK.
+    public var onSettingsRequested: ((SettingsRequest) -> Void)?
+    /// Called (on any thread) after the assistant changed settings without asking (Apply directly).
+    public var onSettingsApplied: ((SettingsRequest) -> Void)?
+    /// Called (on any thread) whenever the settings tools or an approval changed the settings.
+    public var onSettingsChange: (() -> Void)?
     /// Messages sent without a prompt (chats with auto-send on). The user views this in the app.
     public let autoSends: AutoSendHistory
     private var limiter: AutoSendLimiter
@@ -43,8 +56,10 @@ public final class Gate {
                 sender: MessageSender, autoSends: AutoSendHistory = AutoSendHistory(url: nil),
                 classifier: ContentClassifier? = nil, imageClassifier: ImageClassifier? = nil,
                 textRecognizer: TextRecognizer? = VisionTextRecognizer(), nudityDetector: NudityDetector? = nil,
+                preferences: AppPreferences = MemoryPreferences(),
                 openStore: @escaping () throws -> MessagesStore) {
         self.permissions = permissions; self.log = log; self.contacts = contacts
+        self.preferences = preferences
         self.filter = ContentFilter(classifier: classifier)
         self.photos = PhotoChecker(classifier: imageClassifier, recognizer: textRecognizer, nudity: nudityDetector, textFilter: filter)
         self.sender = sender; self.openStore = openStore
@@ -77,13 +92,35 @@ public final class Gate {
     // MARK: - Permission changes (menu bar app only)
 
     public func setAccess(_ access: ChatAccess, for chatID: String) throws {
-        try permissions.update { $0.chats[chatID] = access; $0.markReviewed([chatID]) }
+        try updateChat(chatID) { a, _ in a = access }
+    }
+
+    /// Changes one chat atomically, then drops drafts and waiting sends it no longer allows. The app's
+    /// switches and the assistant's settings tools both come through here. If `change` throws, nothing changes.
+    func updateChat(_ chatID: String, markReviewed: Bool = true, _ change: (inout ChatAccess, PermissionState) throws -> Void) throws {
+        try permissions.update { s in
+            var a = s.chats[chatID] ?? .none
+            try change(&a, s)
+            s.chats[chatID] = a
+            if markReviewed { s.markReviewed([chatID]) }
+        }
         purge(chatID: chatID)
     }
 
     public func setPaused(_ paused: Bool) throws {
         try permissions.update { $0.paused = paused }
-        if paused { cancelWaitingSends(where: { _ in true }, reason: "The user paused Veil") }
+        if paused { didPause() }
+    }
+
+    func didPause() {
+        cancelWaitingSends(where: { _ in true }, reason: "The user paused Veil")
+        cancelSettingsRequests(reason: "Veil was paused")
+    }
+
+    /// Off, Ask me or Apply directly. The app's Settings is the only caller; no MCP tool reaches this.
+    public func setAgentSettings(_ mode: AgentSettingsMode) throws {
+        try permissions.update { $0.agentSettings = mode }
+        if mode == .off { cancelSettingsRequests(reason: "the user turned off settings changes") }
     }
 
     /// Kill switch for every chat's auto-send. Per-chat choices are kept for when it's turned back on.
@@ -92,8 +129,7 @@ public final class Gate {
     }
 
     public func setAutoSendLimit(_ limit: AutoSendLimit) throws {
-        let clamped = AutoSendLimit(count: min(max(limit.count, 1), 50), minutes: min(max(limit.minutes, 1), 24 * 60))
-        try permissions.update { $0.autoSendLimit = clamped == .standard ? nil : clamped }
+        try permissions.update { $0.setAutoSendLimit(limit) }
     }
 
     public func markReviewed(_ ids: [String]) throws {
@@ -279,7 +315,7 @@ public final class Gate {
     }
 
     /// Drops anything derived from a chat that's no longer allowed.
-    private func purge(chatID: String) {
+    func purge(chatID: String) {
         let a = permissions.state.access(chatID)
         lock.lock()
         let before = _drafts.count
@@ -290,7 +326,7 @@ public final class Gate {
         if changed { onOutboxChange?() }
     }
 
-    private func cancelWaitingSends(where match: (SendRequest) -> Bool, reason: String) {
+    func cancelWaitingSends(where match: (SendRequest) -> Bool, reason: String) {
         lock.lock()
         var changed = false
         for i in _sends.indices where _sends[i].status == .waiting && match(_sends[i]) {
@@ -305,6 +341,7 @@ public final class Gate {
         try permissions.reset()
         lock.lock(); _drafts.removeAll(); lock.unlock()
         cancelWaitingSends(where: { _ in true }, reason: "permissions were reset")
+        cancelSettingsRequests(reason: "permissions were reset")
     }
 
     /// Forget finished send requests (and their text) after an hour. Called periodically by the app.
@@ -641,6 +678,9 @@ public final class Gate {
                            "note": .string(fallback.map { $0 + " " + note } ?? note)]),
                     "Asked to send a message (\(text.count) characters), waiting for approval" + (fallback != nil ? " (auto-send limit or non-text)" : ""), c)
 
+        case _ where Self.settingsTools.contains(tool):
+            return try settingsTool(tool, args, state, convs, client)
+
         case "check_send_status":
             guard let id = args["request_id"]?.string, let r = sends.first(where: { $0.id == id }) else {
                 throw Denied(message: "No send request with that id. Finished requests are forgotten after an hour.")
@@ -896,7 +936,7 @@ public final class Gate {
                 (a.activity, "activity"), (a.filtered && a.anyEnabled, "content_filter")].filter(\.0).map(\.1)
     }
 
-    private func entry(client: String, tool: String, chatID: String?, chatName: String?, _ o: LogEntry.Outcome, _ s: String) -> LogEntry {
+    func entry(client: String, tool: String, chatID: String?, chatName: String?, _ o: LogEntry.Outcome, _ s: String) -> LogEntry {
         LogEntry(date: Date(), client: client, tool: tool, chatID: chatID, chatName: chatName, outcome: o, summary: s)
     }
 
