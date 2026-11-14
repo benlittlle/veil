@@ -87,6 +87,15 @@ struct AgentSettingsTests {
         #expect(log.contains { $0.tool == "approve_settings" && $0.client == "You" && $0.outcome == .allowed && $0.summary.contains("Read on") })
     }
 
+    @Test func thePromptIsPlainLanguage() throws {
+        let h = try harness(.ask, access: [ID.mom: ChatAccess(send: true)])
+        var prompted: [SettingsRequest] = []
+        h.gate.onSettingsRequested = { prompted.append($0) }
+        change(h, ID.mom, ["read": true, "auto_send": true])
+        #expect(prompted.first?.phrases == ["turn on Read for Mom", "turn on Auto-send for Mom (5 per 10 min)"])
+        #expect(prompted.first?.shortSummary == "Read on, Auto-send on (5 per 10 min)")
+    }
+
     @Test func approvedOnlyOnce() throws {
         let h = try harness(.ask)
         let id = try #require(change(h, ID.therapist, ["read": true]).json["request_id"]?.string)

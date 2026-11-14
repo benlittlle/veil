@@ -34,10 +34,12 @@ public final class MemoryPreferences: AppPreferences {
 
 /// One plain-language line about a change, e.g. "turn on Read" / "Read on".
 public struct SettingLine: Equatable, Sendable {
-    /// For the approval prompt: "turn on Read".
+    /// For the approval prompt: "turn on Auto-send".
     public let phrase: String
-    /// For the activity log and notifications: "Read on".
+    /// For the activity log and notifications: "Auto-send on (5 per 10 min)".
     public let short: String
+    /// Goes after the chat name in the prompt: "turn on Auto-send for Mom (5 per 10 min)".
+    public var detail = ""
 }
 
 /// A partial update to one chat. Only the fields that are set change.
@@ -115,7 +117,7 @@ public struct ChatSettingsChange: Equatable, Sendable {
         var out: [SettingLine] = []
         func toggle(_ title: String, _ was: Bool, _ now: Bool, _ extra: String = "") {
             guard was != now else { return }
-            out.append(SettingLine(phrase: "turn \(now ? "on" : "off") \(title)\(extra)", short: "\(title) \(now ? "on" : "off")\(extra)"))
+            out.append(SettingLine(phrase: "turn \(now ? "on" : "off") \(title)", short: "\(title) \(now ? "on" : "off")\(extra)", detail: extra))
         }
         for s in Switch.allCases { toggle(s.title, before[keyPath: s.keyPath], after[keyPath: s.keyPath]) }
         let l = state.effectiveAutoSendLimit
@@ -210,7 +212,7 @@ public struct SettingsRequest: Identifiable, Equatable, Sendable {
     public var chatID: String? { if case .chat(let id, _, _) = target { return id }; return nil }
     public var chatName: String? { if case .chat(_, let n, _) = target { return n }; return nil }
     /// "turn on Read for Mom"
-    public var phrases: [String] { lines.map { l in chatName.map { "\(l.phrase) for \($0)" } ?? l.phrase } }
+    public var phrases: [String] { lines.map { l in (chatName.map { "\(l.phrase) for \($0)" } ?? l.phrase) + l.detail } }
     /// "Read on, Auto-send on (5 per 10 min)"
     public var shortSummary: String { lines.map(\.short).joined(separator: ", ") }
 }
