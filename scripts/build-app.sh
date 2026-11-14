@@ -59,13 +59,16 @@ for s in 16 32 128 256 512; do
   sips -z $s $s "$ICON_SRC/veil-icon-graphite.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
   sips -z $((s * 2)) $((s * 2)) "$ICON_SRC/veil-icon-graphite.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-
 # Dock icons: one per accent, swapped in at runtime (Settings → Accent). Sage uses the forest colourway.
+# Graphite is the app icon itself, so it isn't stored twice.
 mkdir -p "$APP/Contents/Resources/DockIcons"
-for c in graphite clay forest ocean plum; do
+for c in clay forest ocean plum; do
   sips -z 512 512 "$ICON_SRC/veil-icon-$c.png" --out "$APP/Contents/Resources/DockIcons/veil-icon-$c.png" >/dev/null
 done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# Same pixels, tighter compression (about a quarter smaller).
+python3 -I scripts/png-repack.py "$APP/Contents/Resources/DockIcons"/*.png
+python3 -I scripts/png-repack.py --icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

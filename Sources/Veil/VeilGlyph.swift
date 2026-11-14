@@ -106,12 +106,11 @@ struct AppIconTile: View {
     var size: CGFloat
     var dimmed = false
 
-    private static var cache: [String: NSImage] = [:]
+    private static var cache: [AccentChoice: NSImage] = [:]
     static func image(for accent: AccentChoice) -> NSImage? {
-        if let hit = cache[accent.dockIconName] { return hit }
-        guard let url = Bundle.main.url(forResource: accent.dockIconName, withExtension: "png", subdirectory: "DockIcons"),
-              let img = NSImage(contentsOf: url) else { return nil }
-        cache[accent.dockIconName] = img
+        if let hit = cache[accent] { return hit }
+        guard let url = accent.iconURL, let img = NSImage(contentsOf: url) else { return nil }
+        cache[accent] = img
         return img
     }
 

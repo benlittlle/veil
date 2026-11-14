@@ -102,7 +102,7 @@ Data files live in `~/Library/Application Support/Veil/`: `permissions.json`, `a
 
 ## Icon
 
-The build script makes `AppIcon.icns` from `Branding/icon/app/veil-icon-graphite.png` on every build (nothing generated is committed), and copies one PNG per accent into `Contents/Resources/DockIcons`. The Dock icon follows *Settings → Accent* (Sage uses the forest colourway); the icon in Finder stays graphite. The menu bar glyph is drawn in code from the same vector paths (`Sources/Veil/VeilGlyph.swift`): dimmed when paused, with a dot while a send is waiting.
+The build script makes `AppIcon.icns` from `Branding/icon/app/veil-icon-graphite.png` on every build (nothing generated is committed), and copies one PNG per other accent into `Contents/Resources/DockIcons` (graphite uses the app icon). The Dock icon follows *Settings → Accent* (Sage uses the forest colourway); the icon in Finder stays graphite. The menu bar glyph is drawn in code from the same vector paths (`Sources/Veil/VeilGlyph.swift`): dimmed when paused, with a dot while a send is waiting.
 
 ## Releasing (maintainers)
 

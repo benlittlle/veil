@@ -24,15 +24,18 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .plum: return ((0.55, 0.35, 0.60), (0.75, 0.57, 0.81))
         }
     }
-    /// The Dock icon for this accent (a PNG in the app's Resources/DockIcons).
-    var dockIconName: String {
+    /// The Dock icon for this accent. Graphite is the app icon itself; the others are PNGs in the
+    /// app's Resources/DockIcons. nil when the bundle has no icons (e.g. `swift run`).
+    var iconURL: URL? {
+        let name: String
         switch self {
-        case .graphite: return "veil-icon-graphite"
-        case .clay: return "veil-icon-clay"
-        case .sage: return "veil-icon-forest"
-        case .ocean: return "veil-icon-ocean"
-        case .plum: return "veil-icon-plum"
+        case .graphite: return Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+        case .clay: name = "veil-icon-clay"
+        case .sage: name = "veil-icon-forest"
+        case .ocean: name = "veil-icon-ocean"
+        case .plum: name = "veil-icon-plum"
         }
+        return Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "DockIcons")
     }
 }
 

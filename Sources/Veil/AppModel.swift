@@ -131,8 +131,7 @@ final class AppModel: ObservableObject {
     /// The Dock icon follows the accent. The icon in Finder (the bundle's AppIcon) stays graphite.
     private func applyDockIcon() {
         guard mode == .live, let app = NSApp,
-              let url = Bundle.main.url(forResource: accent.dockIconName, withExtension: "png", subdirectory: "DockIcons"),
-              let image = NSImage(contentsOf: url) else { return }
+              let url = accent.iconURL, let image = NSImage(contentsOf: url) else { return }
         app.applicationIconImage = image
     }
 
