@@ -53,6 +53,24 @@ enum Snapshot {
         model.setAccess(ChatAccess(activity: true), for: DemoData.ID.therapist)
         render(MainView(pane: .chats, selectedChat: DemoData.ID.therapist), size: CGSize(width: 960, height: 800), dark: false, to: dir.appendingPathComponent("chats-activity.png"), model: model)
         render(MainView(pane: .chats, selectedChat: DemoData.ID.therapist), size: CGSize(width: 960, height: 800), dark: true, to: dir.appendingPathComponent("chats-activity-dark.png"), model: model)
+        // Assistant can change settings: Ask me, with one request waiting; then Apply directly.
+        model.setAgentSettings(.ask)
+        _ = g.call(tool: "change_chat_settings", arguments: ["chat_id": .string(DemoData.ID.alex), "send": true, "auto_send": true], client: "Assistant")
+        model.settingsRequests = g.settingsRequests
+        model.log = g.log.all
+        for dark in [false, true] {
+            render(ApprovalPanelView().background(Theme.card), size: nil, dark: dark, to: dir.appendingPathComponent("approval-settings\(dark ? "-dark" : "").png"), model: model)
+            render(MainView(pane: .settings), size: CGSize(width: 960, height: 900), dark: dark, to: dir.appendingPathComponent("settings-agent\(dark ? "-dark" : "").png"), model: model)
+        }
+        render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-settings.png"), model: model)
+        for r in g.settingsRequests { g.declineSettings(r.id) }
+        model.setAgentSettings(.direct)
+        _ = g.call(tool: "change_chat_settings", arguments: ["chat_id": .string(DemoData.ID.climbing), "activity": true], client: "Assistant")
+        model.log = g.log.all
+        render(MainView(pane: .settings), size: CGSize(width: 960, height: 900), dark: false, to: dir.appendingPathComponent("settings-agent-direct.png"), model: model)
+        render(ActivityView().background(Theme.window), size: CGSize(width: 760, height: 420), dark: false, to: dir.appendingPathComponent("activity-settings.png"), model: model)
+        model.setAgentSettings(.off)
+        model.settingsRequests = g.settingsRequests
         // Content filter: Alex's chat is filtered in demo mode, with sensitive-looking demo messages.
         model.refreshFilterStatus()
         _ = g.call(tool: "read_chat", arguments: ["chat_id": .string(DemoData.ID.alex)], client: "Assistant")
