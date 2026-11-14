@@ -136,6 +136,17 @@ struct ChatsView: View {
                 Spacer(minLength: 4)
                 if isNew { Circle().fill(Theme.accent).frame(width: 7, height: 7) }
                 else if a.hidden { Image(systemName: "eye.slash").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                else if a.anyEnabled, let end = a.expires {
+                    // Time left on a time-limited share. Counts down while the list is open.
+                    TimelineView(.periodic(from: .now, by: 20)) { ctx in
+                        HStack(spacing: 3) {
+                            Image(systemName: "timer")
+                            Text(ShareDuration.remainingShort(until: end, now: ctx.date))
+                        }
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.accent).fixedSize()
+                    }
+                    .accessibilityLabel("Shared for \(ShareDuration.remaining(until: end, now: Date()))")
+                }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(selected ? Theme.card : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -200,7 +211,8 @@ struct ChatDetail: View {
                     SectionLabel(text: "What \(name) can do here")
                     Card {
                         ToggleRow(icon: "text.bubble", title: "Read & summarize",
-                                  detail: "Read messages in this chat, including its full history.",
+                                  detail: a.history == .all ? "Read messages in this chat, including its full history."
+                                                            : "Read messages in this chat, as far back as History below allows.",
                                   isOn: model.binding(chat.id, \.read), disabled: a.hidden)
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "clock", title: "See activity (no content)",
@@ -237,6 +249,8 @@ struct ChatDetail: View {
                     }
                 }
 
+                ChatSharingSection(chat: chat)
+
                 ChatFilterSection(chat: chat)
 
                 Card {
@@ -247,13 +261,13 @@ struct ChatDetail: View {
 
                 HStack(spacing: 10) {
                     Button("Allow all but sending") {
-                        // Keeps the content filter (and its settings) as they are.
-                        var all = a.allOffKeepingFilter
-                        all.read = true; all.waiting = true; all.draft = true; all.attachments = true
-                        model.setAccess(all, for: chat.id)
+                        // Only the switches change: the content filter, history and time limit stay as they are.
+                        model.setSwitches([\.read: true, \.waiting: true, \.draft: true, \.attachments: true, \.send: false, \.activity: false], for: chat.id)
                     }.buttonStyle(QuietButtonStyle())
-                    Button("Turn everything off") { model.setAccess(a.allOffKeepingFilter, for: chat.id) }
-                        .buttonStyle(QuietButtonStyle())
+                    Button("Turn everything off") {
+                        model.setSwitches([\.read: false, \.waiting: false, \.draft: false, \.attachments: false, \.send: false, \.activity: false], for: chat.id)
+                    }
+                    .buttonStyle(QuietButtonStyle())
                     Spacer()
                 }
                 .disabled(a.hidden)
@@ -281,5 +295,114 @@ struct ChatDetail: View {
         if a.hidden { return "This chat is invisible to \(model.assistantName)." }
         if !a.anyEnabled { return "Right now \(model.assistantName) can only see that this chat exists, with its name and number." }
         return "Changes apply instantly. Turning something off also clears any drafts or unsent requests for it."
+    }
+}
+
+/// How far back the assistant can read in a chat, and how long the chat stays shared.
+struct ChatSharingSection: View {
+    @EnvironmentObject var model: AppModel
+    let chat: Conversation
+
+    var body: some View {
+        let a = model.access(chat.id)
+        let name = model.assistantName
+        VStack(alignment: .leading, spacing: 8) {
+        SectionLabel(text: "How far back, and for how long")
+        Card {
+            row(icon: "clock.arrow.circlepath", title: "History \(name) can see", detail: historyDetail(a), active: a.history != .all) {
+                Picker("", selection: Binding(get: { a.history }, set: { model.setHistory($0, for: chat.id) })) {
+                    ForEach(HistoryWindow.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.menu).labelsHidden().fixedSize()
+                .accessibilityLabel("History \(name) can see")
+            }
+            Divider().padding(.leading, 60)
+            // Re-drawn every 20 seconds so the countdown stays current.
+            TimelineView(.periodic(from: .now, by: 20)) { ctx in shareRow(a, now: ctx.date) }
+        }
+        .opacity(a.hidden ? 0.45 : 1)
+        .disabled(a.hidden)
+        }
+    }
+
+    @ViewBuilder
+    func shareRow(_ a: ChatAccess, now: Date) -> some View {
+        if !a.hasAnySwitch {
+            row(icon: "timer", title: "Share for",
+                detail: "How long sharing lasts once you turn something on. When the time is up, every switch turns off again.",
+                active: (model.pendingShareFor[chat.id] ?? .always) != .always) {
+                durationPicker(Binding(get: { model.pendingShareFor[chat.id] ?? .always },
+                                       set: { model.pendingShareFor[chat.id] = $0 == .always ? nil : $0 }))
+            }
+        } else if let end = a.expires {
+            row(icon: "timer", title: "Shared for \(ShareDuration.remaining(until: end, now: now))",
+                detail: "Until \(Self.untilText(end, now: now)). Then every switch turns off, and drafts and waiting sends are cleared.",
+                active: true) {
+                HStack(spacing: 8) {
+                    Menu("Extend") {
+                        Button("1 more hour") { model.extendShare(by: 3600, for: chat.id) }
+                        Button("24 more hours") { model.extendShare(by: 86_400, for: chat.id) }
+                        Button("7 more days") { model.extendShare(by: 7 * 86_400, for: chat.id) }
+                        Divider()
+                        Button("No time limit") { model.shareFor(.always, for: chat.id) }
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    Button("End now") { model.endSharing(chat.id) }.buttonStyle(QuietButtonStyle()).controlSize(.small).fixedSize()
+                }
+            }
+        } else {
+            row(icon: "timer", title: "Share for",
+                detail: "Until you turn it off. Pick a time to end sharing on its own.", active: false) {
+                durationPicker(Binding(get: { .always }, set: { model.shareFor($0, for: chat.id) }))
+            }
+        }
+    }
+
+    func durationPicker(_ selection: Binding<ShareDuration>) -> some View {
+        Picker("", selection: selection) {
+            ForEach(ShareDuration.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.menu).labelsHidden().fixedSize()
+        .accessibilityLabel("Share for")
+    }
+
+    func historyDetail(_ a: ChatAccess) -> String {
+        let name = model.assistantName
+        switch a.history {
+        case .all: return "Everything in this chat, back to the first message."
+        case .day, .week, .month:
+            return "Only messages from the \(a.history.title.lowercased()). Older ones don't exist as far as \(name) can tell."
+        case .sinceShared:
+            if let s = a.sharedSince { return "Only messages from \(Self.untilText(s, now: Date())) on, when you shared this chat." }
+            return a.hasAnySwitch ? "Only messages from now on." : "Only messages from the moment you share this chat."
+        }
+    }
+
+    /// "9:30 PM", "tomorrow 9:30 PM" or "Fri 14 Nov, 9:30 PM".
+    static func untilText(_ d: Date, now: Date) -> String {
+        let cal = Calendar.current
+        let time = d.formatted(date: .omitted, time: .shortened)
+        if cal.isDate(d, inSameDayAs: now) { return time }
+        if let t = cal.date(byAdding: .day, value: 1, to: now), cal.isDate(d, inSameDayAs: t) { return "tomorrow \(time)" }
+        if let y = cal.date(byAdding: .day, value: -1, to: now), cal.isDate(d, inSameDayAs: y) { return "yesterday \(time)" }
+        return d.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + ", " + time
+    }
+
+    func row<Trailing: View>(icon: String, title: String, detail: String, active: Bool, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(active ? Theme.accent : .secondary)
+                .frame(width: 30, height: 30)
+                .background((active ? Theme.accent.opacity(0.12) : Theme.subtle), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // The controls go under the explanation, so neither gets squeezed.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                trailing().padding(.top, 6)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
     }
 }

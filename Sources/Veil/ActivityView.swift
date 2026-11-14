@@ -197,6 +197,7 @@ struct ActivityRow: View {
         case "approve_settings": return "You approved settings"
         case "decline_settings": return "You declined settings"
         case "expire_settings": return "Settings request expired"
+        case "share_ended": return "Stopped sharing"
         default: return tool
         }
     }
@@ -212,6 +213,7 @@ struct ActivityRow: View {
         case "request_send", "check_send_status", "approve_send", "decline_send": return "paperplane"
         case "get_settings", "get_chat_settings", "change_chat_settings", "change_app_settings", "check_settings_request",
              "approve_settings", "decline_settings", "expire_settings": return "slider.horizontal.3"
+        case "share_ended": return "timer"
         default: return "questionmark"
         }
     }
