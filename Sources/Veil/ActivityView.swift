@@ -71,6 +71,9 @@ struct ActivityView: View {
         .padding(28)
     }
 
+    /// Name the assistant on each row only when more than one has used Veil.
+    var manyClients: Bool { Set(model.log.map(\.client)).count > 1 }
+
     @ViewBuilder var logBody: some View {
         let onlyBlocked = filter == .blocked
         let entries = model.log.reversed().filter { e in
@@ -103,7 +106,7 @@ struct ActivityView: View {
                                 Card {
                                     ForEach(Array(items.enumerated()), id: \.element.id) { i, e in
                                         if i > 0 { Divider().padding(.leading, 56) }
-                                        ActivityRow(entry: e)
+                                        ActivityRow(entry: e, showClient: manyClients)
                                     }
                                 }
                             }
@@ -148,6 +151,7 @@ struct AutoSentRow: View {
 struct ActivityRow: View {
     let entry: LogEntry
     var compact = false
+    var showClient = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -168,7 +172,7 @@ struct ActivityRow: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(entry.date.clock).font(.system(size: 11)).foregroundStyle(.tertiary)
-                if !compact { Text(entry.client).font(.system(size: 11)).foregroundStyle(.tertiary) }
+                if !compact && showClient { Text(entry.client).font(.system(size: 11)).foregroundStyle(.tertiary) }
             }
         }
         .padding(.horizontal, compact ? 0 : 14).padding(.vertical, compact ? 4 : 10)
