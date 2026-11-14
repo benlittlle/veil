@@ -26,13 +26,15 @@ final class AppModel: ObservableObject {
 
     @Published var diskAccessProblem: String?
     @Published var conversations: [Conversation] = []
-    @Published var state = PermissionState()
+    @Published var state = PermissionState() { didSet { updateGlyph() } }
     @Published var integrity: PermissionStore.Integrity = .ok
     @Published var log: [LogEntry] = []
     @Published var drafts: [Draft] = []
-    @Published var sends: [SendRequest] = []
+    @Published var sends: [SendRequest] = [] { didSet { updateGlyph() } }
     /// Settings changes the assistant asked for (Ask me, or allowing codes).
-    @Published var settingsRequests: [SettingsRequest] = []
+    @Published var settingsRequests: [SettingsRequest] = [] { didSet { updateGlyph() } }
+    /// What the menu bar glyph shows, kept apart so the status item redraws only when it changes.
+    let glyph = MenuBarGlyph()
     @Published var clients: [String] = []
     /// Per assistant: could the app it runs in read chat.db without Veil? (See `ClientCheck`.)
     let clientCheckStore: ClientCheckStore
@@ -327,7 +329,7 @@ final class AppModel: ObservableObject {
         server = MCPServer(gate: gate)
         if httpToken.isEmpty { httpToken = Self.newToken() }
 
-        gate.log.onAppend = { [weak self] _ in Task { @MainActor in self?.log = self?.gate.log.all ?? [] } }
+        gate.log.onAppend = { [weak self] _ in Task { @MainActor in self?.logChanged() } }
         gate.onOutboxChange = { [weak self] in Task { @MainActor in self?.syncOutbox() } }
         gate.onSendRequested = { [weak self] r in Task { @MainActor in self?.syncOutbox(); self?.onSendRequested?(r) } }
         gate.autoSends.onChange = { [weak self] in Task { @MainActor in self?.autoSendHistory = self?.gate.autoSends.all ?? [] } }
@@ -602,6 +604,25 @@ final class AppModel: ObservableObject {
 
     func clearLog() { gate.log.clear(); log = [] }
 
+    private var logRefreshPending = false
+    /// A burst of requests refreshes the activity list once, not once per request.
+    private func logChanged() {
+        guard !logRefreshPending else { return }
+        logRefreshPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.logRefreshPending = false
+                self.log = self.gate.log.all
+            }
+        }
+    }
+
+    private func updateGlyph() {
+        let style: VeilGlyph.Style = state.paused ? .paused : (waitingSends.isEmpty && waitingSettings.isEmpty ? .normal : .attention)
+        if glyph.style != style { glyph.style = style }
+    }
+
     var newChats: [Conversation] { conversations.filter { !state.reviewed.contains($0.id) } }
     var sharedCount: Int { conversations.filter { access($0.id).anyEnabled }.count }
     var waitingSends: [SendRequest] { sends.filter { $0.status == .waiting } }
@@ -871,6 +892,11 @@ struct PendingConnectChange: Identifiable {
     let plan: ConfigPlan?
     /// For Claude Code: the commands Veil will run.
     let commands: [String]
+}
+
+/// The menu bar glyph's state, observed on its own by the always-visible status item.
+@MainActor final class MenuBarGlyph: ObservableObject {
+    @Published var style: VeilGlyph.Style = .normal
 }
 
 extension Conversation {

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import VeilCore
 
 @main
@@ -10,23 +11,18 @@ struct VeilApp: App {
         MenuBarExtra {
             MenuBarView(openMain: { delegate.showMain($0) }).environmentObject(delegate.model)
         } label: {
-            MenuBarIcon().environmentObject(delegate.model)
+            MenuBarIcon(glyph: delegate.model.glyph)
         }
         .menuBarExtraStyle(.window)
     }
 }
 
 struct MenuBarIcon: View {
-    @EnvironmentObject var model: AppModel
+    /// Only the glyph's own state, so the status item doesn't redraw on every model change.
+    @ObservedObject var glyph: MenuBarGlyph
     var body: some View {
         // A template glyph of the Veil mark: hollow bubble when paused, a dot when a send is waiting.
-        if model.state.paused {
-            Image(nsImage: VeilGlyph.menuBarImage(.paused))
-        } else if !model.waitingSends.isEmpty || !model.waitingSettings.isEmpty {
-            Image(nsImage: VeilGlyph.menuBarImage(.attention))
-        } else {
-            Image(nsImage: VeilGlyph.menuBarImage(.normal))
-        }
+        Image(nsImage: VeilGlyph.menuBarImage(glyph.style))
     }
 }
 
@@ -40,6 +36,7 @@ struct MenuBarIcon: View {
     private var mainWindow: NSWindow?
     private var hosting: NSHostingController<AnyView>?
     private var panel: NSPanel?
+    private var panelCloser: AnyCancellable?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
@@ -90,7 +87,16 @@ struct MenuBarIcon: View {
     }
 
     func windowWillClose(_ n: Notification) {
-        if (n.object as? NSWindow) == mainWindow { NSApp.setActivationPolicy(.accessory) }
+        guard let w = n.object as? NSWindow, w == mainWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
+        // Let the window and its views go once it has closed, so nothing in it keeps updating or
+        // holding memory while it's hidden. It's rebuilt (same size and place) when opened again.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.mainWindow === w, !w.isVisible else { return }
+                self.mainWindow = nil; self.hosting = nil
+            }
+        }
     }
 
     /// A small floating prompt near the top-right of the screen. Stays until the user decides.
@@ -109,7 +115,7 @@ struct MenuBarIcon: View {
             p.contentView = h
             panel = p
             // Close the panel automatically once nothing is waiting.
-            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            panelCloser = model.$sends.receive(on: DispatchQueue.main).sink { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty, self.model.waitingSettings.isEmpty else { return }
                     p.orderOut(nil)

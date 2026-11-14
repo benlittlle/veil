@@ -15,14 +15,19 @@ enum VeilGlyph {
     /// The artwork's bounds, with room for the stroke and the attention dot.
     private static let art = CGRect(x: 248, y: 205, width: 620, height: 638)
 
-    /// A template image for the status item (`size` in points).
+    private static var images: [String: NSImage] = [:]
+
+    /// A template image for the status item (`size` in points). Made once per style and size.
     static func menuBarImage(_ style: Style = .normal, size: CGFloat = 18) -> NSImage {
+        let key = "\(style)-\(size)"
+        if let hit = images[key] { return hit }
         let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { rect in
             draw(style, in: rect, color: .black)
             return true
         }
         image.isTemplate = true
         image.accessibilityDescription = "Veil"
+        images[key] = image
         return image
     }
 
