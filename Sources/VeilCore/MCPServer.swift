@@ -5,29 +5,52 @@ import Foundation
 public final class MCPServer {
     public let gate: Gate
     public var onSessionsChange: (() -> Void)?
+    /// Called when a client finishes `initialize`, with whether it could read chat.db itself.
+    public var onClientCheck: ((ClientCheck) -> Void)?
     private let lock = NSLock()
-    private var active: [UUID: String] = [:]
+    private var active: [UUID: ClientCheck] = [:]
 
     public init(gate: Gate) { self.gate = gate }
 
     /// Names of currently connected clients (for the menu bar status line).
-    public var connectedClients: [String] { lock.lock(); defer { lock.unlock() }; return Array(active.values) }
+    public var connectedClients: [String] { lock.lock(); defer { lock.unlock() }; return active.values.map(\.name) }
+    /// Currently connected clients with their chat.db check.
+    public var connectedChecks: [ClientCheck] { lock.lock(); defer { lock.unlock() }; return Array(active.values) }
 
     public final class Session {
         let id = UUID()
+        public let transport: ClientCheck.Transport
         private let lock = NSLock()
         private var _clientName = "Unknown assistant"
+        private var _reach: ChatDBReach
+        private var _messages = 0
         var clientName: String {
             get { lock.lock(); defer { lock.unlock() }; return _clientName }
             set { lock.lock(); _clientName = newValue; lock.unlock() }
         }
+        /// What the relay reported. HTTP sessions can't be checked; relay sessions start as "didn't say".
+        public var reach: ChatDBReach { lock.lock(); defer { lock.unlock() }; return _reach }
         weak var server: MCPServer?
-        init(server: MCPServer) { self.server = server }
-        public func handle(_ message: JSON) -> JSON? { server?.handle(message, session: self) }
+        init(server: MCPServer, transport: ClientCheck.Transport) {
+            self.server = server; self.transport = transport
+            _reach = transport == .http ? .cantCheckHTTP : .cantCheckOldRelay
+        }
+        public func handle(_ message: JSON) -> JSON? {
+            lock.lock(); _messages += 1; let first = _messages == 1; lock.unlock()
+            // The relay's hello is only believed as the very first line of a socket session, before
+            // anything from the assistant, so an assistant can't send its own to hide a warning.
+            if message["method"]?.string == RelayHello.method, message["id"] == nil {
+                if first, transport == .relay, let readable = message["params"]?["chatDbReadable"]?.bool {
+                    lock.lock(); _reach = readable ? .readable : .blocked; lock.unlock()
+                }
+                return nil
+            }
+            return server?.handle(message, session: self)
+        }
         public func close() { server?.end(self) }
     }
 
-    public func makeSession() -> Session { Session(server: self) }
+    public func makeSession(transport: ClientCheck.Transport = .relay) -> Session { Session(server: self, transport: transport) }
 
     private func end(_ s: Session) {
         lock.lock(); active[s.id] = nil; lock.unlock(); onSessionsChange?()
@@ -46,7 +69,10 @@ public final class MCPServer {
         switch method {
         case "initialize":
             if let name = params["clientInfo"]?["name"]?.string { session.clientName = Self.clientLabel(name) }
-            lock.lock(); active[session.id] = session.clientName; lock.unlock(); onSessionsChange?()
+            let check = ClientCheck(name: session.clientName, transport: session.transport, reach: session.reach)
+            lock.lock(); active[session.id] = check; lock.unlock()
+            onClientCheck?(check)
+            onSessionsChange?()
             let version = params["protocolVersion"]?.string ?? "2025-06-18"
             return result(id, [
                 "protocolVersion": .string(version),

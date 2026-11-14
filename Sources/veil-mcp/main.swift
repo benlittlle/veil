@@ -1,8 +1,15 @@
 // veil-mcp: the command an MCP client (Claude Desktop, Cursor, your own agent) launches.
 //
 // It is only a pipe. It relays newline-delimited JSON-RPC between stdin/stdout and the
-// Veil app's private Unix socket. It never opens chat.db, so the assistant that
+// Veil app's private Unix socket. It never reads chat.db, so the assistant that
 // launches it needs no Full Disk Access, and all filtering happens inside the app.
+//
+// One check, no reading: macOS attributes file access to the app that launched this relay,
+// so on startup it asks the kernel whether chat.db *could* be opened (open, then close at
+// once; not a single byte is read). If it could, the assistant's own app has Full Disk
+// Access and can skip Veil entirely. The relay tells Veil that one yes/no in a hello line
+// (a JSON-RPC notification, `veil/relayHello`) before relaying anything, and Veil warns
+// the user. An older Veil ignores the line; the assistant never sees it.
 
 import Foundation
 
@@ -13,8 +20,19 @@ let enclosingApp: String? = {
     let suffix = "/Contents/MacOS/veil-mcp"
     return exe.hasSuffix(suffix) ? String(exe.dropLast(suffix.count)) : nil
 }()
-let socketPath = ProcessInfo.processInfo.environment["VEIL_SOCKET"]
-    ?? NSHomeDirectory() + "/Library/Application Support/Veil/mcp.sock"
+let env = ProcessInfo.processInfo.environment
+let socketPath = env["VEIL_SOCKET"] ?? NSHomeDirectory() + "/Library/Application Support/Veil/mcp.sock"
+/// Overridable so tests can point the check at a fixture instead of the real database.
+let chatDBPath = env["VEIL_CHAT_DB"] ?? NSHomeDirectory() + "/Library/Messages/chat.db"
+
+/// Could the app that launched us open chat.db? Opens and immediately closes it; never reads.
+func chatDBOpenable() -> Bool {
+    let f = open(chatDBPath, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+    guard f >= 0 else { return false }
+    close(f)
+    return true
+}
+let chatDBReadable = chatDBOpenable()
 
 func connectSocket() -> Int32? {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -37,7 +55,7 @@ func write(_ fd: Int32, _ data: Data) -> Bool {
 }
 
 var fd = connectSocket()
-if fd == nil {
+if fd == nil && env["VEIL_NO_LAUNCH"] == nil {
     // Try to start the app in the background, then wait for it.
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -61,6 +79,10 @@ guard let sock = fd else {
 var nosig: Int32 = 1
 setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
 signal(SIGPIPE, SIG_IGN)
+
+// The hello goes first, before anything from the assistant (see the header comment).
+let hello = #"{"jsonrpc":"2.0","method":"veil/relayHello","params":{"chatDbReadable":\#(chatDBReadable),"relayVersion":1}}"# + "\n"
+_ = write(sock, Data(hello.utf8))
 
 // stdin -> socket
 Thread.detachNewThread {

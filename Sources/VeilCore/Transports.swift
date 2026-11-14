@@ -32,7 +32,7 @@ public final class UnixSocketServer {
     private func serve(_ c: Int32) {
         var nosig: Int32 = 1
         setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
-        let session = server.makeSession()
+        let session = server.makeSession(transport: .relay)
         defer { session.close(); close(c) }
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 65536)
@@ -141,7 +141,7 @@ public final class LocalHTTPServer {
             let session: MCPServer.Session
             lock.lock()
             if msg["method"]?.string == "initialize" {
-                session = server.makeSession()
+                session = server.makeSession(transport: .http)
                 let newID = UUID().uuidString
                 if sessionOrder.count >= 32 { let oldest = sessionOrder.removeFirst(); sessions.removeValue(forKey: oldest)?.close() }
                 sessions[newID] = session
@@ -151,7 +151,7 @@ public final class LocalHTTPServer {
                 session = s
             } else {
                 // Stateless clients: one-off session.
-                session = server.makeSession()
+                session = server.makeSession(transport: .http)
             }
             lock.unlock()
             guard let reply = session.handle(msg) else { return ("202 Accepted", [:], Data()) }
