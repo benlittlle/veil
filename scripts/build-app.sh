@@ -26,6 +26,18 @@ cp "$BIN/Veil" "$APP/Contents/MacOS/Veil"
 # Sparkle (auto-updates). Veil isn't sandboxed, so Sparkle's XPC services aren't needed.
 ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
+# Only what runs: no headers or module maps, English only (the app is English-only; Base.lproj is
+# Sparkle's English), and only the CPU architectures Veil itself is built for.
+SPF="$APP/Contents/Frameworks/Sparkle.framework"
+for d in Headers PrivateHeaders Modules; do rm -rf "${SPF:?}/$d" "$SPF/Versions/B/$d"; done
+find "$SPF/Versions/B/Resources" -maxdepth 1 -name '*.lproj' ! -name 'Base.lproj' ! -name 'en.lproj' -exec rm -rf {} +
+ARCHS=($(lipo -archs "$APP/Contents/MacOS/Veil"))
+find "$SPF/Versions/B" -type f -perm +111 | while read -r f; do
+  have=$(lipo -archs "$f" 2>/dev/null) || continue
+  [ "$have" = "${ARCHS[*]}" ] && continue
+  if [ ${#ARCHS[@]} -eq 1 ]; then lipo "$f" -thin "${ARCHS[0]}" -output "$f"
+  else lipo "$f" $(printf -- '-extract %s ' "${ARCHS[@]}") -output "$f"; fi
+done
 install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/Veil" 2>/dev/null || true
 cp "$BIN/veil-mcp" "$APP/Contents/MacOS/veil-mcp"
 for exe in "$APP/Contents/MacOS/Veil" "$APP/Contents/MacOS/veil-mcp"; do
