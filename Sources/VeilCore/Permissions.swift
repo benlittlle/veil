@@ -77,6 +77,15 @@ public struct ChatAccess: Codable, Equatable, Sendable {
     }
 
     public static let none = ChatAccess()
+
+    /// Flips one switch the way the app's toggles do: turning Send off also turns auto-send off,
+    /// so turning Send back on never revives it. The app and the assistant's settings tools both use this.
+    public mutating func set(_ key: WritableKeyPath<ChatAccess, Bool>, _ on: Bool) {
+        self[keyPath: key] = on
+        if key == \.send && !on { autoSend = false }
+        if key == \.autoSend { autoSend = on && send }
+    }
+
     public var anyEnabled: Bool { !hidden && (read || waiting || draft || send || attachments || activity) }
 }
 
@@ -86,6 +95,27 @@ public struct AutoSendLimit: Codable, Equatable, Sendable {
     public var minutes: Int
     public init(count: Int, minutes: Int) { self.count = count; self.minutes = minutes }
     public static let standard = AutoSendLimit(count: 5, minutes: 10)
+    public static let counts = 1...50
+    public static let minuteRange = 1...(24 * 60)
+    /// Kept inside the ranges the app offers.
+    public var clamped: AutoSendLimit {
+        AutoSendLimit(count: min(max(count, Self.counts.lowerBound), Self.counts.upperBound),
+                      minutes: min(max(minutes, Self.minuteRange.lowerBound), Self.minuteRange.upperBound))
+    }
+}
+
+/// Whether the assistant may change Veil's settings over MCP. Changed only in the app, never by a tool.
+public enum AgentSettingsMode: String, Codable, Sendable, CaseIterable {
+    /// No settings tools exist for the assistant (the default).
+    case off
+    /// The assistant can ask; the user approves each change in a prompt.
+    case ask
+    /// Changes apply right away, with a notification. Allowing PINs & codes still asks.
+    case direct
+
+    public var title: String {
+        switch self { case .off: return "Off"; case .ask: return "Ask me"; case .direct: return "Apply directly" }
+    }
 }
 
 public struct PermissionState: Codable, Equatable, Sendable {
@@ -101,6 +131,8 @@ public struct PermissionState: Codable, Equatable, Sendable {
     public var autoSendLimit: AutoSendLimit?
     /// The default content-filter profile for filtered chats. nil means `FilterPolicy.standard`.
     public var filterProfile: FilterPolicy?
+    /// Whether the assistant may change settings over MCP. Only the app changes this.
+    public var agentSettings: AgentSettingsMode = .off
     public init() {}
 
     public var effectiveAutoSendLimit: AutoSendLimit { autoSendLimit ?? .standard }
@@ -112,7 +144,7 @@ public struct PermissionState: Codable, Equatable, Sendable {
         return a.filterPolicy ?? effectiveFilterProfile
     }
 
-    private enum CodingKeys: String, CodingKey { case generation, paused, chats, reviewed, autoSendStopped, autoSendLimit, filterProfile }
+    private enum CodingKeys: String, CodingKey { case generation, paused, chats, reviewed, autoSendStopped, autoSendLimit, filterProfile, agentSettings }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         generation = try c.decode(UInt64.self, forKey: .generation)
@@ -122,6 +154,8 @@ public struct PermissionState: Codable, Equatable, Sendable {
         autoSendStopped = try c.decodeIfPresent(Bool.self, forKey: .autoSendStopped) ?? false
         autoSendLimit = try c.decodeIfPresent(AutoSendLimit.self, forKey: .autoSendLimit)
         filterProfile = try c.decodeIfPresent(FilterPolicy.self, forKey: .filterProfile)
+        // An unknown value fails to decode, so the file is treated as unreadable and everything stays off.
+        agentSettings = try c.decodeIfPresent(AgentSettingsMode.self, forKey: .agentSettings) ?? .off
     }
     public func encode(to e: Encoder) throws {
         var c = e.container(keyedBy: CodingKeys.self)
@@ -130,6 +164,14 @@ public struct PermissionState: Codable, Equatable, Sendable {
         if autoSendStopped { try c.encode(true, forKey: .autoSendStopped) }
         try c.encodeIfPresent(autoSendLimit, forKey: .autoSendLimit)
         try c.encodeIfPresent(filterProfile, forKey: .filterProfile)
+        // Off is left out, so files signed before this setting existed re-encode to the same bytes.
+        if agentSettings != .off { try c.encode(agentSettings, forKey: .agentSettings) }
+    }
+
+    /// Stores a rate limit, kept inside the ranges the app offers. The standard one is left out of the file.
+    public mutating func setAutoSendLimit(_ limit: AutoSendLimit) {
+        let l = limit.clamped
+        autoSendLimit = l == .standard ? nil : l
     }
 
     public mutating func markReviewed<S: Sequence>(_ ids: S) where S.Element == String {
@@ -227,12 +269,14 @@ public final class PermissionStore {
         }
     }
 
-    /// Only the menu bar app calls this. There is no code path from MCP to here.
-    public func update(_ change: (inout PermissionState) -> Void) throws {
+    /// Changes the signed state atomically. Called by the app, and by the gate's settings tools only
+    /// when the user set "Assistant can change settings" to Ask me or Apply directly. If `change`
+    /// throws, nothing is saved.
+    public func update(_ change: (inout PermissionState) throws -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         guard let key else { throw KeyUnavailable() }
         var next = current
-        change(&next)
+        try change(&next)
         next.generation = current.generation + 1
         let data = try JSONEncoder.sorted.encode(File(state: next, mac: mac(next, key)))
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
