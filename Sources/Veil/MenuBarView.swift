@@ -1,0 +1,208 @@
+import SwiftUI
+import VeilCore
+
+struct MenuBarView: View {
+    @EnvironmentObject var model: AppModel
+    var openMain: (Pane) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            if let r = model.waitingSends.first {
+                ApprovalCard(request: r, compact: true)
+            }
+
+            if !model.drafts.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    SectionLabel(text: "Drafts")
+                    ForEach(model.drafts.prefix(3)) { d in DraftRow(draft: d) }
+                }
+            }
+
+            if !model.newChats.isEmpty {
+                Button { openMain(.chats) } label: {
+                    HStack(spacing: 8) {
+                        Circle().fill(Theme.accent).frame(width: 7, height: 7)
+                        Text("\(model.newChats.count) new \(model.newChats.count == 1 ? "chat" : "chats") to review").font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(10).background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    SectionLabel(text: "Recent activity")
+                    Spacer()
+                    Button("See all") { openMain(.activity) }.buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+                }
+                if model.log.isEmpty {
+                    Text("Quiet so far.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 6)
+                } else {
+                    ForEach(model.log.suffix(4).reversed()) { ActivityRow(entry: $0, compact: true) }
+                }
+            }
+
+            if !model.autoSendChats.isEmpty || model.state.autoSendStopped {
+                AutoSendSwitch()
+            }
+
+            Divider()
+
+            HStack {
+                Toggle(isOn: Binding(get: { model.state.paused }, set: { model.setPaused($0) })) {
+                    Text("Pause everything").font(.system(size: 12))
+                }.toggleStyle(.switch).controlSize(.mini).tint(Theme.accent)
+                Spacer()
+                Button("Open Veil") { openMain(.chats) }.buttonStyle(QuietButtonStyle()).controlSize(.small)
+                Menu {
+                    if Updates.shared.isAvailable {
+                        Button("Check for Updates…") { Updates.shared.checkNow() }
+                    }
+                    Button("Quit Veil") { NSApp.terminate(nil) }
+                } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
+        .background(Theme.window)
+        .id(model.themeID)
+    }
+
+    var header: some View {
+        HStack(spacing: 10) {
+            AppIconTile(size: 32, dimmed: model.state.paused)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Veil").font(.system(size: 13, weight: .semibold))
+                Text(status).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+        }
+    }
+
+    var status: String {
+        if case .tampered = model.integrity { return "Locked. Open Setup & safety to review." }
+        if model.state.paused { return "Paused. \(model.assistantName) sees nothing." }
+        if model.diskAccessProblem != nil { return "Needs Full Disk Access" }
+        let who = model.clients.isEmpty ? "Not connected" : "\(Set(model.clients).sorted().joined(separator: ", ")) connected"
+        return "\(who) · \(model.sharedCount) chats shared"
+    }
+}
+
+struct DraftRow: View {
+    @EnvironmentObject var model: AppModel
+    let draft: Draft
+    @State private var copied = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("To \(draft.chatName)").font(.system(size: 12, weight: .medium))
+                Spacer()
+                Text(draft.created.relative).font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+            Text(draft.text).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Discard") { model.discardDraft(draft.id) }
+                Button(copied ? "Copied" : "Copy") { model.copy(draft.text); copied = true }
+            }.buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+        }
+        .padding(10)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 0.5))
+    }
+}
+
+/// The approve / don't send prompt. Shown in a floating panel and in the menu.
+struct ApprovalCard: View {
+    @EnvironmentObject var model: AppModel
+    let request: SendRequest
+    var compact = false
+    /// Send stays disabled briefly so a keystroke meant for another app can't approve it.
+    @State private var armed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 10 : 14) {
+            HStack(spacing: 10) {
+                Avatar(name: request.chatName, size: compact ? 28 : 36)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Send this to \(request.chatName)?").font(.system(size: compact ? 13 : 15, weight: .semibold))
+                    Text("\(model.assistantName) wrote it. Nothing goes out unless you say so.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Spacer(minLength: 40)
+                Text(request.text)
+                    .font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Theme.bubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if model.waitingSends.count > 1 {
+                    Text("\(model.waitingSends.count - 1) more waiting").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Don't send") { model.decline(request.id) }
+                    .buttonStyle(QuietButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Send") { model.approve(request.id) }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(!armed).opacity(armed ? 1 : 0.5)
+            }
+        }
+        .padding(compact ? 12 : 20)
+        .task(id: request.id) {
+            armed = false
+            try? await Task.sleep(for: .seconds(1.2))
+            armed = true
+        }
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(compact ? Theme.accent.opacity(0.35) : .clear, lineWidth: 1))
+    }
+}
+
+/// Floating panel content: shows the oldest waiting request, if any.
+struct ApprovalPanelView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if let r = model.waitingSends.last {
+            ApprovalCard(request: r).frame(width: 400)
+        } else {
+            Color.clear.frame(width: 400, height: 1)
+        }
+    }
+}
+
+/// Kill switch for every chat's auto-send. Per-chat choices are kept.
+struct AutoSendSwitch: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let stopped = model.state.autoSendStopped
+        let n = model.autoSendChats.count
+        HStack(spacing: 10) {
+            Image(systemName: stopped ? "bolt.slash" : "bolt.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(stopped ? Color.secondary : Theme.accent)
+                .frame(width: 28, height: 28)
+                .background(stopped ? Theme.subtle : Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Auto-send").font(.system(size: 12, weight: .medium))
+                Text(stopped ? "Stopped. Every send needs your OK." : "On for \(n) \(n == 1 ? "chat" : "chats") · \(model.state.effectiveAutoSendLimit.count) per \(model.state.effectiveAutoSendLimit.minutes) min")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(get: { !stopped }, set: { model.setAutoSendStopped(!$0) }))
+                .toggleStyle(.switch).labelsHidden().controlSize(.mini).tint(Theme.accent)
+                .accessibilityLabel("Auto-send for all chats")
+        }
+        .padding(10)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 0.5))
+    }
+}
