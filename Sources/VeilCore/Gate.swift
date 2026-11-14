@@ -522,7 +522,9 @@ public final class Gate {
     }
 
     private func dispatch(_ tool: String, _ args: JSON, _ state: PermissionState, _ client: String, _ now: Date) throws -> (ToolResult, String, Conversation?) {
-        let convs = try conversations().filter { !state.access($0.id).hidden }
+        // A filtered chat's name (a group name someone typed) is masked like its messages, before
+        // anything uses it: outputs, list_chats' query matching and refusals all see the masked name.
+        let convs = try conversations().filter { !state.access($0.id).hidden }.map { Self.shownName($0, state) }
         /// The chat's history window: nothing older than this is returned, as if it didn't exist.
         func cutoff(_ c: Conversation) -> Date? { state.historyCutoff(c.id, now: now) }
         func inWindow(_ d: Date, _ c: Conversation) -> Bool { cutoff(c).map { d >= $0 } ?? true }
@@ -738,9 +740,10 @@ public final class Gate {
                 if let f, f[m.id].map({ !$0.withheld }) != true { return false }
                 // Check mode: only photos that already passed. The rest are checked in the background.
                 guard photoCleared(a, store, scope) else { heldBack += 1; return false }
-                return true
+                // Another filtered chat it's also in can withhold it by its name.
+                return !crossChatName(a, f.map { $0[m.id]?.attachmentNames[a.id] } ?? a.name, store, scope, except: c.chatRowIDs).hidden
             }.map { a, m in
-                let name = f.map { $0[m.id]?.attachmentNames[a.id] } ?? a.name
+                let name = crossChatName(a, f.map { $0[m.id]?.attachmentNames[a.id] } ?? a.name, store, scope, except: c.chatRowIDs).name
                 return ["attachment_id": JSON(a.id), "time": .string(iso(m.date)), "from": .string(senderLabel(m)),
                         "type": JSON(a.mimeType), "name": JSON(name), "size_bytes": JSON(a.bytes)]
             }
@@ -970,11 +973,14 @@ public final class Gate {
             }
             o["reply_to"] = ["id": JSON(orig.id), "from": .string(senderLabel(orig)), "text": JSON(quoted.map { String($0.prefix(200)) })]
         }
-        let visible = m.attachments.filter { attachmentReachable($0.id, store, scope) && photoCleared($0, store, scope) }
+        let visible: [(AttachmentInfo, String?)] = m.attachments.compactMap { a in
+            guard attachmentReachable(a.id, store, scope), photoCleared(a, store, scope) else { return nil }
+            let shown = crossChatName(a, decision.map { $0.attachmentNames[a.id] } ?? a.name, store, scope, except: c.chatRowIDs)
+            return shown.hidden ? nil : (a, shown.name)
+        }
         if !visible.isEmpty {
-            o["attachments"] = .array(visible.map { a in
-                ["attachment_id": JSON(a.id), "type": JSON(a.mimeType),
-                 "name": JSON(decision.map { $0.attachmentNames[a.id] } ?? a.name)]
+            o["attachments"] = .array(visible.map { a, name in
+                ["attachment_id": JSON(a.id), "type": JSON(a.mimeType), "name": JSON(name)]
             })
         }
         if visible.count < m.attachments.count { o["attachments_hidden"] = JSON(m.attachments.count - visible.count) }
@@ -1013,6 +1019,8 @@ public final class Gate {
         var cutoffs: [Int64: Date] = [:]
         /// Rows of filtered chats in Check mode, where each photo must pass the check.
         let checked: [Int64: CheckedChat]
+        /// Rows of every filtered chat, with its filter settings (for attachment names shared across chats).
+        var filtered: [Int64: FilterPolicy] = [:]
         /// The Check-mode chats among some chat rows, once each.
         func checkedChats(_ rows: Set<Int64>) -> [CheckedChat] {
             var seen = Set<String>()
@@ -1022,14 +1030,40 @@ public final class Gate {
 
     func attachScope(_ convs: [Conversation], _ state: PermissionState, _ now: Date) -> AttachScope {
         var checked: [Int64: CheckedChat] = [:]
-        var cutoffs: [Int64: Date] = [:]
+        var cutoffs: [Int64: Date] = [:], filtered: [Int64: FilterPolicy] = [:]
         for c in convs { if let d = state.historyCutoff(c.id, now: now) { for r in c.chatRowIDs { cutoffs[r] = d } } }
+        for c in convs { if let p = state.filterPolicy(for: c.id) { for r in c.chatRowIDs { filtered[r] = p } } }
         for c in convs where state.access(c.id).attachments {
             guard let p = state.filterPolicy(for: c.id), p.attachments == .check else { continue }
             let cc = CheckedChat(id: c.id, policy: p, allowedPhotos: Set(state.chats[c.id]?.filterAllowedPhotos ?? []))
             for r in c.chatRowIDs { checked[r] = cc }
         }
-        return AttachScope(rows: attachmentRows(convs, state), cutoffs: cutoffs, checked: checked)
+        return AttachScope(rows: attachmentRows(convs, state), cutoffs: cutoffs, checked: checked, filtered: filtered)
+    }
+
+    /// An attachment's name as every other filtered chat it appears in would show it: masked by each one's
+    /// settings, or hidden when one of them withholds what's in the name. `except` is the chat being shown,
+    /// whose own decision is already in `name`.
+    func crossChatName(_ a: AttachmentInfo, _ name: String?, _ store: MessagesStore, _ scope: AttachScope, except: [Int64]) -> (name: String?, hidden: Bool) {
+        guard var n = name, !scope.filtered.isEmpty, let rows = try? Set(store.chatRowIDs(forAttachment: a.id)) else { return (name, false) }
+        var seen: [FilterPolicy] = []
+        for r in rows.subtracting(except).sorted() {
+            guard let p = scope.filtered[r], !seen.contains(p) else { continue }
+            seen.append(p)
+            let (masked, _, hits) = ContentFilter.mask(n, policy: p)
+            if !hits.withhold.isEmpty { return (nil, true) }
+            n = masked
+        }
+        return (n, false)
+    }
+
+    /// A filtered chat as the assistant sees it: its own name (a group name) goes through the detectors.
+    static func shownName(_ c: Conversation, _ state: PermissionState) -> Conversation {
+        guard let g = c.groupName, !g.isEmpty, let p = state.filterPolicy(for: c.id) else { return c }
+        let masked = ContentFilter.maskName(g, policy: p)
+        guard masked != g else { return c }
+        return Conversation(id: c.id, chatRowIDs: c.chatRowIDs, chatGUIDs: c.chatGUIDs, groupName: masked,
+                            isGroup: c.isGroup, participants: c.participants, lastActivity: c.lastActivity)
     }
 
     /// What the filter judges for a message: its text and the names of attachments the assistant could see.

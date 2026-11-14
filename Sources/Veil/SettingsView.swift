@@ -112,7 +112,7 @@ struct SettingsView: View {
             Button("Apply directly", role: .destructive) { model.setAgentSettings(.direct) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(name) will be able to turn on Read, Send, auto-send and the other switches for any chat it can see, change the content filter and pause Veil, and the change happens right away. A message it reads could trick it into opening up chats or turning on auto-send. You'll get a notification for each change, and allowing PINs and codes still asks you. Hidden chats, the webhook and this setting stay out of reach.")
+            Text("\(name) will be able to turn on Read, Send, auto-send and the other switches for any chat it can see, change the content filter and pause Veil, and the change happens right away. A message it reads could trick it into opening up chats or turning on auto-send. You'll get a notification for each change, and loosening the content filter (allowing PINs and codes included) still asks you. Hidden chats, the webhook and this setting stay out of reach.")
         }
     }
 

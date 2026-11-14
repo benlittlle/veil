@@ -348,16 +348,57 @@ struct AgentSettingsTests {
         // Turning the filter off would let codes through too.
         #expect(change(h, ID.alex, ["filter": ["on": false]]).json["status"]?.string == "pending")
         #expect(h.gate.permissions.state.access(ID.alex).filtered)
-        // Other filter changes apply directly, starting from the default profile.
-        #expect(change(h, ID.alex, ["filter": ["strictness": "strict", "photos": "withhold", "categories": ["politics": "allow"]]]).json["status"]?.string == "applied")
+        // Tightening applies directly, starting from the default profile; allowing another category asks.
+        #expect(change(h, ID.alex, ["filter": ["strictness": "strict", "photos": "withhold"]]).json["status"]?.string == "applied")
+        #expect(change(h, ID.alex, ["filter": ["categories": ["politics": "allow"]]]).json["status"]?.string == "pending")
         let p = try #require(h.gate.permissions.state.filterPolicy(for: ID.alex))
-        #expect(p.strictness == .strict && p.attachments == .withhold && p.action(.politics) == .allow && p.action(.codes) == .mask)
+        #expect(p.strictness == .strict && p.attachments == .withhold && p.action(.politics) == .withhold && p.action(.codes) == .mask)
         // The user approves: now codes are allowed.
         h.gate.approveSettings(try #require(codes.json["request_id"]?.string))
         #expect(h.gate.permissions.state.filterPolicy(for: ID.alex)?.action(.codes) == .allow)
         // The tool says so.
         let desc = MCPServer.settingsTools.first { $0["name"]?.string == "change_chat_settings" }?["description"]?.string ?? ""
         #expect(desc.contains("PINs & verification codes") && desc.contains("always needs the user's approval"))
+    }
+
+    @Test func loosensTheFilterAlwaysAsks() throws {
+        let h = try harness(.direct)
+        try h.gate.setFiltered(true, for: ID.alex)
+        var strict = FilterPolicy.standard
+        strict.strictness = .strict
+        strict.attachments = .withhold
+        strict.set(.cardNumbers, .withhold)
+        try h.gate.setChatFilterPolicy(strict, for: ID.alex)
+        let before = h.gate.permissions.state.filterPolicy(for: ID.alex)
+        // Every way of showing more asks, whatever the category.
+        let loosening: [[String: JSON]] = [
+            ["filter": ["categories": ["passwords_and_keys": "allow"]]], ["filter": ["categories": ["card_numbers": "mask"]]],
+            ["filter": ["categories": ["bank_details": "allow"]]], ["filter": ["categories": ["swearing": "allow"]]],
+            ["filter": ["categories": ["health": "allow"]]], ["filter": ["categories": ["id_documents": "allow"]]],
+            ["filter": ["strictness": "balanced"]], ["filter": ["strictness": "relaxed"]],
+            ["filter": ["photos": "check"]], ["filter": ["photos": "allow"]], ["filter": ["on": false]],
+            // Tightening one thing doesn't hide loosening another.
+            ["filter": ["strictness": "strict", "categories": ["passwords_and_keys": "allow", "codes": "withhold"]]],
+        ]
+        for args in loosening {
+            let out = change(h, ID.alex, args)
+            #expect(out.json["status"]?.string == "pending", "\(args)")
+            // Turning the filter off also lets codes through, so it gets the stronger codes wording.
+            let note = out.json["note"]?.string ?? ""
+            #expect(note.contains("Loosening the content filter") || note.contains("PINs & verification codes"), "\(args)")
+            h.gate.cancelSettingsRequests(reason: "test")   // at most 3 can wait at once
+        }
+        #expect(h.gate.permissions.state.filterPolicy(for: ID.alex) == before)
+        h.gate.cancelSettingsRequests(reason: "test")
+        // Tightening applies directly.
+        #expect(change(h, ID.alex, ["filter": ["categories": ["codes": "withhold"]]]).json["status"]?.string == "applied")
+        #expect(h.gate.permissions.state.filterPolicy(for: ID.alex)?.action(.codes) == .withhold)
+        // A chat whose filter is off can't have its settings loosened quietly either.
+        try h.gate.setFiltered(false, for: ID.mom)
+        #expect(change(h, ID.mom, ["filter": ["categories": ["passwords_and_keys": "allow"]]]).json["status"]?.string == "pending")
+        h.gate.cancelSettingsRequests(reason: "test")
+        // Turning a filter on is tightening.
+        #expect(change(h, ID.mom, ["filter": ["on": true]]).json["status"]?.string == "applied")
     }
 
     @Test func unknownKeysAndBadValuesAreRejected() throws {

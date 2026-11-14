@@ -136,6 +136,22 @@ public struct ChatSettingsChange: Equatable, Sendable {
         return !Self.codesVisible(before, state) && Self.codesVisible(after, state)
     }
 
+    /// True when this change would let the content filter show more than it does now: turning it off, any
+    /// category moving towards Allow (Withhold → Mask → Allow), a lower strictness, or photos & files moving
+    /// towards Allow (Withhold → Check → Allow). That always needs the user's approval, even in Apply directly.
+    /// Tightening doesn't. A chat whose filter is off has its settings compared too, so they can't be
+    /// loosened quietly before the filter is turned back on.
+    public func loosensFilter(from before: ChatAccess, in state: PermissionState) -> Bool {
+        guard filterOn != nil || changesPolicy, let after = try? applied(to: before, in: state) else { return false }
+        if before.filtered && !after.filtered { return true }
+        let p0 = before.filterPolicy ?? state.effectiveFilterProfile, p1 = after.filterPolicy ?? state.effectiveFilterProfile
+        func rank(_ a: FilterAction) -> Int { switch a { case .allow: return 0; case .mask: return 1; case .withhold: return 2 } }
+        func rank(_ s: FilterStrictness) -> Int { switch s { case .relaxed: return 0; case .balanced: return 1; case .strict: return 2 } }
+        func rank(_ m: PhotoMode) -> Int { switch m { case .allow: return 0; case .check: return 1; case .withhold: return 2 } }
+        if FilterCategory.allCases.contains(where: { rank(p1.action($0)) < rank(p0.action($0)) }) { return true }
+        return rank(p1.strictness) < rank(p0.strictness) || rank(p1.attachments) < rank(p0.attachments)
+    }
+
     /// What actually changes, in plain language. Empty when every value is already set.
     public func lines(from before: ChatAccess, in state: PermissionState, now: Date = Date()) -> [SettingLine] {
         guard let after = try? applied(to: before, in: state, now: now) else { return [] }

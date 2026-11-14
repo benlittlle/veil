@@ -69,10 +69,13 @@ extension Gate {
             let codes = change.allowsCodes(from: before, in: state)
             // More history, or a longer (or no) time limit, is more access: the user always decides.
             let widens = change.widens(from: before, in: state, now: now)
+            // Anything that makes the content filter show more (codes included) is the user's call too.
+            let loosens = codes || change.loosensFilter(from: before, in: state)
             let caution = codes ? "This lets \(c.displayName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts."
+                : loosens ? "This loosens \(c.displayName)'s content filter, so \(preferences.assistantName) sees more than it does now."
                 : widens ? "This gives \(preferences.assistantName) more of \(c.displayName) than it has now (more history, or more time)." : nil
             let target = SettingsRequest.Target.chat(id: c.id, name: c.displayName, change: change)
-            let direct = mode == .direct && !codes && !widens && takeDirectChangeSlot()
+            let direct = mode == .direct && !loosens && !widens && takeDirectChangeSlot()
             if direct {
                 let r = SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client, caution: nil, status: .approved)
                 do { try applyChat(c.id, change, markReviewed: false) }
@@ -82,7 +85,8 @@ extension Gate {
             }
             return try ask(SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client,
                                            caution: caution, status: .pending), c, codes: codes && mode == .direct,
-                           widens: widens && !codes && mode == .direct, overLimit: mode == .direct && !codes && !widens)
+                           loosens: loosens && !codes && mode == .direct,
+                           widens: widens && !loosens && mode == .direct, overLimit: mode == .direct && !loosens && !widens)
 
         case "change_app_settings":
             let change: AppSettingsChange
@@ -129,7 +133,7 @@ extension Gate {
         return (.json(.object(out)), "Changed settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary)", c)
     }
 
-    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, widens: Bool = false, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
+    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, loosens: Bool = false, widens: Bool = false, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
         lock.lock()
         guard _settingsRequests.filter({ $0.status == .pending }).count < Self.maxPendingSettings else {
             lock.unlock()
@@ -143,6 +147,7 @@ extension Gate {
         let minutes = Int(settingsRequestLifetime / 60)
         let l = Self.directChangeLimit
         let why = codes ? "Allowing PINs & verification codes always needs the user's approval. "
+            : loosens ? "Loosening the content filter always needs the user's approval. "
             : widens ? "Sharing more history, or sharing for longer, always needs the user's approval. "
             : overLimit ? "More than \(l.count) changes in \(Int(l.seconds / 60)) minutes need the user's approval. " : ""
         return (.json(["status": "pending", "request_id": .string(r.id), "changes": .array(r.lines.map { .string($0.short) }),
@@ -266,7 +271,7 @@ extension Gate {
             "auto_send_limit": ["count": JSON(l.count), "minutes": JSON(l.minutes)],
             "note": .string((mode == .direct ? "Changes apply right away and the user is notified. "
                                              : "Each change waits for the user's approval in Veil. ")
-                            + "Allowing PINs & verification codes, sharing more history and sharing for longer always need approval. "
+                            + "Loosening a content filter (allowing PINs & verification codes included), sharing more history and sharing for longer always need approval. "
                             + "Pausing blocks every tool, these included, so only the user can unpause."),
         ]
     }

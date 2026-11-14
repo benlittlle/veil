@@ -349,6 +349,14 @@ public final class ContentFilter: @unchecked Sendable {
         return (out, merged.count, hits)
     }
 
+    /// A chat's name through the detectors. A name can't be withheld the way a message is, so every
+    /// pattern category that isn't Allow is masked.
+    public static func maskName(_ name: String, policy: FilterPolicy) -> String {
+        var p = policy
+        for c in FilterCategory.detectorCategories where p.action(c) == .withhold { p.set(c, .mask) }
+        return mask(name, policy: p).0
+    }
+
     /// Counts model calls in flight, without the balance rules of DispatchGroup/DispatchSemaphore
     /// (a classifier may never call back).
     private final class Flight: @unchecked Sendable {
