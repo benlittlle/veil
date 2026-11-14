@@ -28,10 +28,15 @@ What Veil enforces, and what it can't. To report a way past the gate, see [SECUR
 - Content filter (per chat, off by default): every content-returning path in the gate goes through it for filtered chats, after the permission check and before anything is returned. Anything without a decision is withheld. Search matches filtered text only. Its settings and your overrides (messages and photos) are part of the signed `permissions.json`. No MCP tool reads or changes them unless you allow settings changes, and even then only a chat's own filter settings are reachable; your overrides and the review screen exist only in the app. Judgement uses Apple's on-device model only. Verdicts are cached in memory only, never text or pixels.
 - Photo checks: in Check mode a photo is returned only after it passed for every filtered chat it appears in (on top of the every-chat-allows-attachments rule). Unchecked, failed, refused, unreadable, oversized and non-photo files are all withheld, with the same answer to the assistant as a missing attachment.
 - The Unix socket is mode `0600` in a `0700` folder.
+- The relay never reads chat.db. At startup it calls `open()` on it read-only and closes it immediately, only to learn whether the assistant's app could read it, and sends that yes/no as its first line (`veil/relayHello`, a JSON-RPC notification). Veil only accepts it as the very first line of a socket session, so an assistant can't send its own later. Older Veil versions ignore it; the assistant never sees it.
+- Veil reads `TCC.db` read-only (`SQLITE_OPEN_READONLY` + `PRAGMA query_only`) to list apps with Full Disk Access. It never writes to it.
+- One-click connect writes a client config only after you confirm the exact change, backs the file up first, leaves other keys alone, and refuses invalid JSON or a file that changed since you reviewed it. Claude Code is changed only through its own CLI.
 
 ## Limits
 
-- Anything with Full Disk Access can read chat.db directly. The gate only helps if the assistant doesn't have it and its own Messages integration is off.
+- Anything with Full Disk Access can read chat.db directly, and Veil's limits only apply to what an assistant asks Veil for. Veil can tell you when an assistant's app has it; it can't stop that access.
+- The Full Disk Access check is informational. It reflects the moment the assistant connected, is keyed by the name the assistant gives itself, and any process of yours that connects to the socket can claim either answer. Assistants on the local web address, and relays from before the check, can't be checked. "Don't warn me again" is stored in your app preferences, not signed.
+- The list of other apps with Full Disk Access depends on the `TCC.db` layout and is hidden when Veil can't read it. It may not show everything macOS allows (for example, access granted by a device-management profile).
 - Once the assistant has seen something, it may keep it in its own history. Veil can't recall it.
 - The gate trusts processes running as you to the same degree macOS does. Any of your processes can connect to the socket. It still only gets what your switches allow, and every request is logged.
 - The access log is a plain file (`~/Library/Application Support/Veil/access-log.jsonl`). It isn't tamper-proof. Search queries are logged as the assistant typed them.

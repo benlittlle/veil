@@ -48,9 +48,10 @@ Signing tips are in [CONTRIBUTING.md](CONTRIBUTING.md#getting-set-up).
 
 ## Connect your assistant
 
-Make sure the assistant itself has **no** Full Disk Access and its own Messages access is off,
-otherwise it can skip the gate. Then add Veil as an MCP server (the app's *Connect* screen has a
-copy button):
+Turn off the assistant's own Messages integration, if it has one, so it goes through Veil. Then
+open Veil's *Connect* screen: one-click buttons add Veil to **Claude Desktop**, **Cursor** and
+**Claude Code**, showing exactly what changes and backing up the config file first. For anything
+else, copy the config:
 
 ```json
 {
@@ -60,7 +61,7 @@ copy button):
 }
 ```
 
-In Claude Code: `claude mcp add veil -- ~/Applications/Veil.app/Contents/MacOS/veil-mcp`.
+In Claude Code: `claude mcp add --scope user veil -- ~/Applications/Veil.app/Contents/MacOS/veil-mcp`.
 Assistants that only take a URL can use the local web address under *Connect*.
 
 Open a chat in Veil, flip on what you want to share, and ask something like
@@ -72,7 +73,7 @@ Open a chat in Veil, flip on what you want to share, and ask something like
 - The content filter lowers risk but can miss things. Only *Read* off is certain.
 - Auto-send trusts the assistant; a message it reads could try to trick it. Use it for low-stakes chats.
 - The same goes for letting it change settings directly: a message could trick it into opening up chats or turning on auto-send. *Ask me* is the safer choice.
-- Anything on your Mac with Full Disk Access can read Messages directly. Veil only helps if your assistant doesn't have it.
+- Anything on your Mac with Full Disk Access can read Messages directly, and Veil's limits only apply to what an assistant asks Veil for. Veil checks each assistant when it connects and tells you if the app it runs in has Full Disk Access (you can acknowledge it if that's how you want it), and lists the other apps that have it.
 
 ## More
 

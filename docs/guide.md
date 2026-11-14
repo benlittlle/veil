@@ -20,6 +20,31 @@ Every chat (including group chats and unknown numbers) has its own switches. All
 
 With everything off, the assistant sees only the chat's name and number (or group name and members) in `list_chats`. Only you change these switches, unless you let the assistant ask for changes (see *Letting the assistant change settings*).
 
+## Connecting your assistant
+
+*Connect* has one-click buttons for three clients. Each row shows where that client stands: not installed, installed but not connected, connected, or connected to a different or missing copy of `veil-mcp` (with *Fix*). *Remove* takes Veil out again.
+
+- **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`) and **Cursor** (`~/.cursor/mcp.json`): Veil adds `mcpServers.veil` with this app's own `Contents/MacOS/veil-mcp` as the command. Before anything is written you see the file, the `veil` entry before and after, the other servers it keeps, and (if you want) the whole new file. Veil saves a timestamped backup next to the file first (`….veil-backup-YYYYMMDD-HHMMSS`), leaves every other key and server as it was, and writes through a symlink to the real file. The file is saved with standard JSON formatting, so spacing and key order may change. If the file isn't valid JSON, or changed after you reviewed it, Veil writes nothing and says so. Restart the client afterwards.
+- **Claude Code**: if the `claude` command is found (common install paths, then your login shell), Veil shows and then runs `claude mcp add --scope user veil -- <path to veil-mcp>` (*Fix* runs `claude mcp remove --scope user veil` first). Otherwise it shows the command to copy into a terminal. Status is read from `~/.claude.json`; Veil never edits that file itself. Start a new Claude Code session afterwards.
+- **Anything else**: copy the config shown below the buttons.
+
+## When an assistant has Full Disk Access
+
+Veil's switches decide what an assistant gets *through Veil*. An app with Full Disk Access can also open the Messages database itself, and Veil can't see or limit that. Plenty of setups run that way on purpose (a coding agent in a terminal with Full Disk Access, an agent host that needs broad file access), so Veil tells you rather than raising an alarm.
+
+**How Veil knows.** macOS attributes file access to the app that launched a process, so the relay runs with the access of the assistant's app. When it starts, the relay asks the system to open `~/Library/Messages/chat.db` and closes it again straight away, without reading anything, and passes that one yes/no to Veil. Veil remembers it per assistant name.
+
+**What you see.** If an assistant's app has Full Disk Access, *Setup & safety* and *Connect* show a notice ("Grok Bot runs with Full Disk Access, so it could read Messages directly. Veil's limits only apply to what it asks Veil for.") and the menu bar panel shows a quiet line. *Why this matters and what you can do* lists the options:
+
+- Many agents only need a few folders, which macOS grants separately under *Privacy & Security → Files and Folders*, so Full Disk Access is often more than needed.
+- Turn off the agent's own Messages integration so it uses Veil.
+- Run the agent under a separate, non-admin macOS user, which keeps your Messages folder out of its reach.
+- Or keep it. *I understand, don't warn me again* replaces the notice with a quiet "Has Full Disk Access (acknowledged)" for that assistant. If it later connects without Full Disk Access and then with it again, the notice comes back.
+
+Assistants on the local web address can't be checked this way; Veil says "can't check" for them, as it does for relays from before this check.
+
+**Other apps that can read Messages directly.** Because Veil has Full Disk Access itself, it can read the macOS privacy database (`TCC.db`) read-only and list the other apps and tools that have it. AI apps, and apps an assistant you've connected probably runs in, are highlighted; terminals, editors and command-line tools are labelled. The list is for information. If the database can't be read (its layout changes between macOS versions), the list is hidden. Veil never writes to it.
+
 ## Connecting over HTTP
 
 **Assistants that only take a URL:** turn on *Connect → Local web address*. That serves MCP Streamable HTTP at `http://127.0.0.1:8765/mcp` (loopback only) and requires the `Authorization: Bearer …` key shown there. Requests with a foreign `Origin` or `Host` are rejected.

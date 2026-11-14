@@ -61,6 +61,9 @@ fake image model, including ones that error, hang, refuse, answer "unsure" or sk
 recognition is the real Vision engine in a few of them. The photo eval runs the real engines over those
 drawings plus the desktop and user pictures that ship with macOS, and prints recall per category, false
 withholds and latency. Nothing explicit is generated; the nudity path is tested with fakes.
+The Full Disk Access tests build a fake TCC.db, and run the real relay against a fixture file in place of
+chat.db (`VEIL_CHAT_DB`, `VEIL_SOCKET`, `VEIL_NO_LAUNCH`). The one-click connect tests use a temp folder as
+the home folder and a recording stand-in for the `claude` CLI; the real configs and CLI are never touched.
 
 ## Layout
 
@@ -86,13 +89,16 @@ Sources/VeilCore/          everything that touches data or enforces policy (no U
   Webhook.swift            new-message watcher, ping coalescing, delivery and retries, ping log
   Contacts.swift           name lookup
   DemoData.swift           fixture database for tests and demo mode
+  ClientChecks.swift       relay hello, per-assistant Full Disk Access check, acknowledgements
+  FullDiskAccess.swift     read-only TCC.db reader for apps with Full Disk Access (and a fixture builder)
+  ConnectClients.swift     one-click connect: config merge/backup for Claude Desktop and Cursor, Claude Code CLI
   Migration.swift          one-time move from the app's earlier name (folder, settings, Keychain; fails closed)
 Sources/Veil/              SwiftUI menu bar app (VeilGlyph.swift: the menu bar glyph)
-Sources/veil-mcp/          stdio relay launched by the assistant (~80 lines)
+Sources/veil-mcp/          stdio relay launched by the assistant (~100 lines)
 Tests/VeilCoreTests/       leak, behavior, integrity, protocol and migration tests
 ```
 
-Data files live in `~/Library/Application Support/Veil/`: `permissions.json`, `access-log.jsonl`, `webhook-log.jsonl`, `auto-sent.jsonl`, `mcp.sock`.
+Data files live in `~/Library/Application Support/Veil/`: `permissions.json`, `access-log.jsonl`, `webhook-log.jsonl`, `auto-sent.jsonl`, `client-checks.json` (per-assistant Full Disk Access check, no message data), `mcp.sock`.
 
 ## Icon
 
