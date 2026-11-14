@@ -15,7 +15,7 @@ public final class DatabaseWatcher {
     private var firing = false
     private var handlers: [() -> Void] = []
 
-    public init(databasePath: String, latency: TimeInterval = 0.5) {
+    public init(databasePath: String, latency: TimeInterval = 1) {
         let url = URL(fileURLWithPath: databasePath)
         folder = url.deletingLastPathComponent().path
         // Not the -shm file: readers write to it too, so it changes when nothing new arrived.

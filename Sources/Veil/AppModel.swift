@@ -418,11 +418,12 @@ final class AppModel: ObservableObject {
 
     func stop() { watcher.stop(); socket?.stop(); http?.stop(); webhook.stop() }
 
-    /// Messages wrote to chat.db. Writes come in bursts, so this runs at most every 2 seconds.
+    /// Messages wrote to chat.db. Writes can go on for minutes (an iCloud sync, say), so the chat
+    /// list and the filter's background pass follow at most every 10 seconds. Pings don't wait for this.
     private func databaseChanged() {
         guard !changePending else { return }
         changePending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.changePending = false
