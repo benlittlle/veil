@@ -87,6 +87,7 @@ Sources/VeilCore/          everything that touches data or enforces policy (no U
   PhotoCheck.swift         photo checks: verdicts, content-hash cache, background queue, fail-closed decisions
   AppleImageClassifier.swift  on-device photo engines (model with image input, Vision OCR, SensitiveContentAnalysis)
   Webhook.swift            new-message watcher, ping coalescing, delivery and retries, ping log
+  DatabaseWatcher.swift    kernel file events on chat.db and its WAL, so new messages wake Veil instead of polling
   Contacts.swift           name lookup
   DemoData.swift           fixture database for tests and demo mode
   ClientChecks.swift       relay hello, per-assistant Full Disk Access check, acknowledgements
