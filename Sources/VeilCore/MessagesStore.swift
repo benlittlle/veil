@@ -109,17 +109,19 @@ public final class MessagesStore {
     }
 
     /// Real messages only (no reactions, no "X named the conversation" events), newest first.
-    public func messages(inChats chats: [Int64], beforeID: Int64? = nil, limit: Int) throws -> [Message] {
+    /// `notBefore` is the chat's history window: nothing older comes back, as if it didn't exist.
+    public func messages(inChats chats: [Int64], beforeID: Int64? = nil, limit: Int, notBefore: Date? = nil) throws -> [Message] {
         guard !chats.isEmpty else { return [] }
-        var params: [SQLiteDB.Value] = chats.map { .int($0) }
+        let (window, windowParams) = Self.window(notBefore)
+        var params: [SQLiteDB.Value] = chats.map { .int($0) } + windowParams
         var cursor = ""
         if let b = beforeID {
             // Page by (date, ROWID): synced messages can have ROWIDs out of date order.
-            // The cursor message must belong to these chats, so ids can't be probed across chats.
+            // The cursor message must belong to these chats (and their window), so ids can't be probed.
             guard let d = try db.query("""
                 SELECT m.date FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-                WHERE m.ROWID = ? AND cmj.chat_id IN (\(placeholders(chats.count))) LIMIT 1
-                """, [.int(b)] + chats.map { .int($0) }).first?.int("date") else { return [] }
+                WHERE m.ROWID = ? AND cmj.chat_id IN (\(placeholders(chats.count))) \(window) LIMIT 1
+                """, [.int(b)] + chats.map { .int($0) } + windowParams).first?.int("date") else { return [] }
             cursor = "AND (m.date < ? OR (m.date = ? AND m.ROWID < ?))"
             params += [.int(d), .int(d), .int(b)]
         }
@@ -128,31 +130,61 @@ public final class MessagesStore {
             SELECT \(Self.messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
-            WHERE cmj.chat_id IN (\(placeholders(chats.count))) \(cursor)
+            WHERE cmj.chat_id IN (\(placeholders(chats.count))) \(window) \(cursor)
               AND m.associated_message_type = 0 AND m.item_type = 0
             GROUP BY m.ROWID ORDER BY m.date DESC, m.ROWID DESC LIMIT ?
             """, params))
     }
 
-    /// Look up a message by guid, but only inside the given chats (used for reply quotes).
-    public func message(guid: String, inChats chats: [Int64]) throws -> Message? {
+    /// `AND m.date >= ?` for a history window, or nothing.
+    static func window(_ notBefore: Date?) -> (String, [SQLiteDB.Value]) {
+        guard let d = notBefore else { return ("", []) }
+        return ("AND m.date >= ?", [.int(appleTimestamp(d))])
+    }
+
+    /// Look up a message by guid, but only inside the given chats and their history window (used for reply quotes).
+    public func message(guid: String, inChats chats: [Int64], notBefore: Date? = nil) throws -> Message? {
         guard !chats.isEmpty else { return nil }
+        let (window, windowParams) = Self.window(notBefore)
         return try hydrate(db.query("""
             SELECT \(Self.messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
-            WHERE m.guid = ? AND cmj.chat_id IN (\(placeholders(chats.count))) LIMIT 1
-            """, [.text(guid)] + chats.map { .int($0) })).first
+            WHERE m.guid = ? AND cmj.chat_id IN (\(placeholders(chats.count))) \(window) LIMIT 1
+            """, [.text(guid)] + chats.map { .int($0) } + windowParams)).first
+    }
+
+    /// Chat rows to search, with the history window that applies to them.
+    public struct SearchScope: Sendable {
+        public let rows: [Int64]
+        public let notBefore: Date?
+        public init(rows: [Int64], notBefore: Date?) { self.rows = rows; self.notBefore = notBefore }
     }
 
     /// Text search, scoped to the given chats. Newer macOS stores text only in
     /// `attributedBody`, so we prefilter in SQL and confirm on decoded text.
     public func search(_ query: String, inChats chats: [Int64], limit: Int) throws -> [Message] {
+        try search(query, in: [SearchScope(rows: chats, notBefore: nil)], limit: limit)
+    }
+
+    /// Text search over several chats, each with its own history window: a match older than its
+    /// chat's window is never considered.
+    public func search(_ query: String, in scopes: [SearchScope], limit: Int) throws -> [Message] {
+        let scopes = scopes.filter { !$0.rows.isEmpty }
+        let chats = scopes.flatMap(\.rows)
         guard !chats.isEmpty, !query.isEmpty else { return [] }
+        // Rows without a window share one IN list; each windowed chat gets its own date bound.
+        var clauses: [String] = []
+        var params: [SQLiteDB.Value] = []
+        let open = scopes.filter { $0.notBefore == nil }.flatMap(\.rows)
+        if !open.isEmpty { clauses.append("+cmj.chat_id IN (\(placeholders(open.count)))"); params += open.map { .int($0) } }
+        for sc in scopes { if let d = sc.notBefore {
+            clauses.append("(+cmj.chat_id IN (\(placeholders(sc.rows.count))) AND m.date >= ?)")
+            params += sc.rows.map { .int($0) } + [.int(appleTimestamp(d))]
+        } }
         // SQLite's LIKE only folds ASCII case, so it's used as a prefilter for ASCII queries only.
         // Rows whose text lives in attributedBody are always decoded and checked here.
         var filter = ""
-        var params: [SQLiteDB.Value] = chats.map { .int($0) }
         if query.allSatisfy(\.isASCII) {
             let like = "%" + query.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
@@ -165,7 +197,7 @@ public final class MessagesStore {
         try db.each("""
             SELECT m.ROWID AS id, m.text, m.attributedBody FROM message m
             WHERE EXISTS (SELECT 1 FROM chat_message_join cmj
-                          WHERE cmj.message_id = m.ROWID AND +cmj.chat_id IN (\(placeholders(chats.count))))
+                          WHERE cmj.message_id = m.ROWID AND (\(clauses.joined(separator: " OR "))))
               AND m.associated_message_type = 0 AND m.item_type = 0 \(filter)
             ORDER BY m.date DESC
             """, params) { r in
@@ -186,14 +218,15 @@ public final class MessagesStore {
     }
 
     /// Latest real message per chat row, for "waiting on reply".
-    public func latestMessage(inChats chats: [Int64]) throws -> Message? {
-        try messages(inChats: chats, limit: 1).first
+    public func latestMessage(inChats chats: [Int64], notBefore: Date? = nil) throws -> Message? {
+        try messages(inChats: chats, limit: 1, notBefore: notBefore).first
     }
 
-    /// Attachments in the given chats, newest first.
-    public func attachments(inChats chats: [Int64], beforeID: Int64? = nil, limit: Int) throws -> [(AttachmentInfo, Message)] {
+    /// Attachments in the given chats, newest first. With `notBefore`, only those on messages inside the window.
+    public func attachments(inChats chats: [Int64], beforeID: Int64? = nil, limit: Int, notBefore: Date? = nil) throws -> [(AttachmentInfo, Message)] {
         guard !chats.isEmpty else { return [] }
-        var params: [SQLiteDB.Value] = chats.map { .int($0) }
+        let (window, windowParams) = Self.window(notBefore)
+        var params: [SQLiteDB.Value] = chats.map { .int($0) } + windowParams
         var cursor = ""
         if let b = beforeID { cursor = "AND maj.attachment_id < ?"; params.append(.int(b)) }
         params.append(.int(Int64(limit)))
@@ -201,12 +234,13 @@ public final class MessagesStore {
             SELECT DISTINCT maj.attachment_id AS aid, m.ROWID AS mid FROM message_attachment_join maj
             JOIN message m ON m.ROWID = maj.message_id
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-            WHERE cmj.chat_id IN (\(placeholders(chats.count))) \(cursor)
+            WHERE cmj.chat_id IN (\(placeholders(chats.count))) \(window) \(cursor)
             ORDER BY maj.attachment_id DESC LIMIT ?
             """, params)
         return try rows.compactMap { r in
             guard let aid = r.int("aid"), let mid = r.int("mid"),
-                  let a = try attachment(id: aid), let m = try messageByID(mid) else { return nil }
+                  let a = try attachment(id: aid), let m = try messageByID(mid),
+                  notBefore.map({ m.date >= $0 }) ?? true else { return nil }
             return (a, m)
         }
     }
@@ -225,17 +259,33 @@ public final class MessagesStore {
             """, [.int(id)]).compactMap { $0.int("chat_id") }
     }
 
-    /// The messages (inside the given chats) that carry an attachment. Used by the content filter.
-    public func messages(forAttachment id: Int64, inChats chats: [Int64]) throws -> [Message] {
+    /// The messages (inside the given chats and their history window) that carry an attachment. Used by the content filter.
+    public func messages(forAttachment id: Int64, inChats chats: [Int64], notBefore: Date? = nil) throws -> [Message] {
         guard !chats.isEmpty else { return [] }
+        let (window, windowParams) = Self.window(notBefore)
         return try hydrate(db.query("""
             SELECT \(Self.messageColumns) FROM message m
             JOIN message_attachment_join maj ON maj.message_id = m.ROWID
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
-            WHERE maj.attachment_id = ? AND cmj.chat_id IN (\(placeholders(chats.count)))
+            WHERE maj.attachment_id = ? AND cmj.chat_id IN (\(placeholders(chats.count))) \(window)
             GROUP BY m.ROWID
-            """, [.int(id)] + chats.map { .int($0) }))
+            """, [.int(id)] + chats.map { .int($0) } + windowParams))
+    }
+
+    /// For each chat row an attachment appears in, the time of the newest message there that carries it.
+    /// The gate uses this so every chat's history window must include the attachment.
+    public func attachmentLatestDates(_ id: Int64) throws -> [Int64: Date] {
+        var out: [Int64: Date] = [:]
+        for r in try db.query("""
+            SELECT cmj.chat_id AS chat, MAX(m.date) AS d FROM message_attachment_join maj
+            JOIN message m ON m.ROWID = maj.message_id
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            WHERE maj.attachment_id = ? GROUP BY cmj.chat_id
+            """, [.int(id)]) {
+            if let c = r.int("chat"), let d = r.int("d") { out[c] = appleDate(d) }
+        }
+        return out
     }
 
     /// Resolves an attachment to a file that is guaranteed to live inside the attachments folder.

@@ -49,6 +49,10 @@ public final class Gate {
 
     /// Called (on any thread) when drafts or send requests change.
     public var onOutboxChange: (() -> Void)?
+    /// Called (on any thread) after time-limited shares ended and were locked, with their chat ids.
+    public var onSharingEnded: (([String]) -> Void)?
+    /// The time used for history windows and time limits. Tests move it forward.
+    public var clock: () -> Date = { Date() }
     /// Called (on any thread) when the assistant asks to send something.
     public var onSendRequested: ((SendRequest) -> Void)?
 
@@ -108,16 +112,72 @@ public final class Gate {
         try updateChat(chatID) { a, _ in a = access }
     }
 
+    /// Flips some switches, leaving everything else (the time limit included) as it is. The app's toggles use
+    /// this. `startFor` sets a time limit when this turns sharing on from nothing.
+    public func setSwitches(_ values: [WritableKeyPath<ChatAccess, Bool>: Bool], for chatID: String, startFor: ShareDuration? = nil) throws {
+        let now = clock()
+        try updateChat(chatID, now: now) { a, _ in
+            let was = a.hasAnySwitch
+            // Send before auto-send, so turning both on in one go works.
+            for (k, v) in values.sorted(by: { ($0.key == \ChatAccess.autoSend ? 1 : 0) < ($1.key == \ChatAccess.autoSend ? 1 : 0) }) { a.set(k, v) }
+            if !was, a.hasAnySwitch, let d = startFor { a.expires = d.expiry(from: now) }
+        }
+    }
+
+    /// How far back the assistant can read in this chat.
+    public func setHistory(_ w: HistoryWindow, for chatID: String) throws {
+        try updateChat(chatID) { a, _ in a.history = w }
+    }
+
+    /// When sharing ends on its own (nil: no time limit). Only while something is shared.
+    public func setShareExpiry(_ end: Date?, for chatID: String) throws {
+        try updateChat(chatID) { a, _ in if a.hasAnySwitch { a.expires = end } }
+    }
+
+    /// "End now": every switch off, the same as a time limit running out, but logged as the user's doing.
+    public func endSharing(_ chatID: String) throws {
+        let name = (try? conversations())?.first { $0.id == chatID }?.displayName ?? chatID
+        try updateChat(chatID) { a, _ in a = a.allOffKeepingFilter }
+        log.append(entry(client: "You", tool: "share_ended", chatID: chatID, chatName: name, .allowed, "You stopped sharing \(name)"))
+    }
+
     /// Changes one chat atomically, then drops drafts and waiting sends it no longer allows. The app's
     /// switches and the assistant's settings tools both come through here. If `change` throws, nothing changes.
-    func updateChat(_ chatID: String, markReviewed: Bool = true, _ change: (inout ChatAccess, PermissionState) throws -> Void) throws {
+    /// A time limit that ran out is applied first, so a change never builds on a share that already ended.
+    func updateChat(_ chatID: String, markReviewed: Bool = true, now: Date? = nil,
+                    _ change: (inout ChatAccess, PermissionState) throws -> Void) throws {
+        let now = now ?? clock()
+        expireShares(now: now)
         try permissions.update { s in
-            var a = s.chats[chatID] ?? .none
+            var before = s.chats[chatID] ?? .none
+            if before.expired(at: now) { before = before.settled(after: before, now: now) }
+            var a = before
             try change(&a, s)
-            s.chats[chatID] = a
+            s.chats[chatID] = a.settled(after: before, now: now)
             if markReviewed { s.markReviewed([chatID]) }
         }
         purge(chatID: chatID)
+    }
+
+    /// Locks every share whose time limit has run out: every switch off (auto-send included), drafts and
+    /// waiting sends purged the same way as turning switches off, and an Activity entry for each.
+    /// Runs on every request, on the app's timer and at launch, so it holds even if Veil was asleep or closed.
+    @discardableResult
+    public func expireShares(now: Date? = nil) -> [String] {
+        let now = now ?? clock()
+        switch permissions.integrity { case .ok, .firstRun: break; case .tampered: return [] }
+        guard !permissions.state.expiredChats(now: now).isEmpty else { return [] }
+        var ended: [String] = []
+        do { try permissions.update { s in ended = s.lockExpired(now: now) } } catch { return [] }
+        guard !ended.isEmpty else { return [] }
+        let names = Dictionary(((try? conversations()) ?? []).map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
+        for id in ended {
+            purge(chatID: id)
+            let name = names[id] ?? id
+            log.append(entry(client: "Veil", tool: "share_ended", chatID: id, chatName: name, .allowed, "Sharing with \(name) ended, as scheduled"))
+        }
+        onSharingEnded?(ended)
+        return ended
     }
 
     public func setPaused(_ paused: Bool) throws {
@@ -221,9 +281,11 @@ public final class Gate {
         let store = try messagesStore()
         let convs = try conversations()
         guard let c = convs.first(where: { $0.id == chatID }) else { return [] }
-        let rows = attachmentRows(convs, state)
-        let msgs = try store.messages(inChats: c.chatRowIDs, limit: limit)
-        let items = msgs.map { filterItem($0, store, rows) }
+        let now = clock()
+        let scope = attachScope(convs, state, now)
+        // What the assistant could be shown: the chat's history window applies here too.
+        let msgs = try store.messages(inChats: c.chatRowIDs, limit: limit, notBefore: state.historyCutoff(chatID, now: now))
+        let items = msgs.map { filterItem($0, store, scope) }
         let allowed = Set(state.chats[chatID]?.filterAllowedMessages ?? [])
         // Judge as if nothing were allowed, so the user sees why an allowed message would be filtered.
         let outcomes = filter.evaluate(items, policy: policy, allowed: [], timeout: timeout)
@@ -265,10 +327,12 @@ public final class Gate {
         let convs = try conversations().filter { !state.access($0.id).hidden }
         guard let c = convs.first(where: { $0.id == chatID }) else { return [] }
         let allowed = Set(state.chats[chatID]?.filterAllowedPhotos ?? [])
-        // Only photos that could be shared at all: one that's also in a chat without photos stays hidden anyway.
-        let rows = attachmentRows(convs, state)
-        let items = try store.attachments(inChats: c.chatRowIDs, limit: limit)
-            .filter { a, _ in attachmentReachable(a.id, store, rows) && PhotoChecker.isPhoto(mimeType: a.mimeType, url: store.safeFileURL(for: a)) }
+        // Only photos that could be shared at all: one that's also in a chat without photos, or outside a
+        // chat's history window, stays hidden anyway.
+        let now = clock()
+        let scope = attachScope(convs, state, now)
+        let items = try store.attachments(inChats: c.chatRowIDs, limit: limit, notBefore: state.historyCutoff(chatID, now: now))
+            .filter { a, _ in attachmentReachable(a.id, store, scope) && PhotoChecker.isPhoto(mimeType: a.mimeType, url: store.safeFileURL(for: a)) }
         let requests = items.compactMap { a, _ in store.safeFileURL(for: a).map { PhotoChecker.Request(id: a.id, url: $0) } }
         let verdicts = photos.check(requests, timeout: timeout, urgent: true)
         return items.compactMap { a, m in
@@ -300,7 +364,9 @@ public final class Gate {
         warming = true; warmLock.unlock()
         defer { warmLock.lock(); warming = false; warmLock.unlock() }
 
-        let state = permissions.state
+        let now = clock()
+        var state = permissions.state
+        state.lockExpired(now: now)
         guard !state.paused, permissions.integrity == .ok || permissions.integrity == .firstRun,
               state.chats.keys.contains(where: { state.filterPolicy(for: $0) != nil }) else { return }
         guard let store = try? warmStore ?? openStore() else { return }
@@ -312,16 +378,18 @@ public final class Gate {
         guard let all = try? store.conversations(contacts: contacts) else { warmStore = nil; return }
         var complete = true
         defer { lastWarm = token.map { ($0, state, engines, complete) } }
-        let convs = all.filter { !state.access($0.id).hidden }
-        let rows = attachmentRows(convs, state)
+        let convs = all.filter { !state.access($0.id, now: now).hidden }
+        let scope = attachScope(convs, state, now)
+        // Only what's inside each chat's history window: nothing older is ever shown, so it isn't checked.
         if pictures {
             // Photos first: they're slower, and the text pass below waits on the model.
             for c in convs {
-                let a = state.access(c.id)
+                let a = state.access(c.id, now: now)
                 guard a.attachments, let p = state.filterPolicy(for: c.id), p.attachments == .check else { continue }
-                guard let items = try? store.attachments(inChats: c.chatRowIDs, limit: photosPerChat) else { complete = false; continue }
+                guard let items = try? store.attachments(inChats: c.chatRowIDs, limit: photosPerChat,
+                                                         notBefore: state.historyCutoff(c.id, now: now)) else { complete = false; continue }
                 let requests = items.compactMap { info, _ -> PhotoChecker.Request? in
-                    guard attachmentReachable(info.id, store, rows), let url = store.safeFileURL(for: info),
+                    guard attachmentReachable(info.id, store, scope), let url = store.safeFileURL(for: info),
                           PhotoChecker.isPhoto(mimeType: info.mimeType, url: url) else { return nil }
                     return PhotoChecker.Request(id: info.id, url: url)
                 }
@@ -329,11 +397,12 @@ public final class Gate {
             }
         }
         for c in convs where text {
-            let a = state.access(c.id)
+            let a = state.access(c.id, now: now)
             guard a.read || a.waiting || a.attachments, let p = state.filterPolicy(for: c.id), p.needsModel else { continue }
-            guard let msgs = try? store.messages(inChats: c.chatRowIDs, limit: perChat) else { complete = false; continue }
+            guard let msgs = try? store.messages(inChats: c.chatRowIDs, limit: perChat,
+                                                 notBefore: state.historyCutoff(c.id, now: now)) else { complete = false; continue }
             let skip = Set(a.filterAllowedMessages)
-            let items = msgs.filter { !skip.contains($0.id) }.map { filterItem($0, store, rows) }
+            let items = msgs.filter { !skip.contains($0.id) }.map { filterItem($0, store, scope) }
             let chunk = filter.batchSize * 2
             for start in stride(from: 0, to: items.count, by: chunk) {
                 let part = Array(items[start..<min(start + chunk, items.count)])
@@ -399,7 +468,8 @@ public final class Gate {
     public func approve(_ id: String) {
         // Claim the request atomically so a double click can't send it twice.
         guard let req = updateSend(id, to: .sending) else { return }
-        guard permissions.state.access(req.chatID).send, !permissions.state.paused else {
+        expireShares()
+        guard permissions.state.access(req.chatID, now: clock()).send, !permissions.state.paused else {
             _ = updateSend(id, from: .sending, to: .cancelled("sending was turned off for this chat")); return
         }
         do {
@@ -430,11 +500,16 @@ public final class Gate {
 
     public func call(tool: String, arguments: JSON, client: String) -> ToolResult {
         let args = arguments
-        let state = permissions.state   // one consistent snapshot per request
+        // Time limits are checked on every request, timer or not: ended shares are locked (and purged and
+        // logged) first, and the snapshot below treats them as locked even if that write failed.
+        let now = clock()
+        expireShares(now: now)
+        var state = permissions.state   // one consistent snapshot per request
+        state.lockExpired(now: now)
         do {
             if case .tampered = permissions.integrity { throw Denied(message: "Veil is locked until the user reviews the permissions in the app.") }
             if state.paused { throw Denied(message: "The user has paused Veil. Nothing is available right now.") }
-            let (result, summary, chat) = try dispatch(tool, args, state, client)
+            let (result, summary, chat) = try dispatch(tool, args, state, client, now)
             log.append(entry(client: client, tool: tool, chatID: chat?.id, chatName: chat?.displayName, .allowed, summary))
             return result
         } catch let d as Denied {
@@ -446,8 +521,12 @@ public final class Gate {
         }
     }
 
-    private func dispatch(_ tool: String, _ args: JSON, _ state: PermissionState, _ client: String) throws -> (ToolResult, String, Conversation?) {
+    private func dispatch(_ tool: String, _ args: JSON, _ state: PermissionState, _ client: String, _ now: Date) throws -> (ToolResult, String, Conversation?) {
         let convs = try conversations().filter { !state.access($0.id).hidden }
+        /// The chat's history window: nothing older than this is returned, as if it didn't exist.
+        func cutoff(_ c: Conversation) -> Date? { state.historyCutoff(c.id, now: now) }
+        func inWindow(_ d: Date, _ c: Conversation) -> Bool { cutoff(c).map { d >= $0 } ?? true }
+        func historyNote(_ c: Conversation) -> String? { state.chats[c.id]?.history.assistantNote }
 
         func chat(_ need: KeyPath<ChatAccess, Bool>, _ what: String) throws -> Conversation {
             guard let id = args["chat_id"]?.string, let c = convs.first(where: { $0.id == id }) else {
@@ -462,19 +541,20 @@ public final class Gate {
         let store = try messagesStore()
         // Chat rows whose attachments may be shown. An attachment must be reachable only from these.
         // Filtered chats whose filter withholds photos & files are left out; in Check mode each photo must pass.
-        let scope = attachScope(convs, state)
-        let attachRows = scope.rows
-        /// Reply quotes, resolved only inside the same conversation.
+        let scope = attachScope(convs, state, now)
+        /// Reply quotes, resolved only inside the same conversation and its history window.
         func quotes(_ msgs: [Message], _ c: Conversation) -> [String: Message] {
             var out: [String: Message] = [:]
-            for g in Set(msgs.compactMap(\.replyToGUID)) { if let q = try? store.message(guid: g, inChats: c.chatRowIDs) { out[g] = q } }
+            for g in Set(msgs.compactMap(\.replyToGUID)) {
+                if let q = try? store.message(guid: g, inChats: c.chatRowIDs, notBefore: cutoff(c)), inWindow(q.date, c) { out[g] = q }
+            }
             return out
         }
         /// Filter decisions for a filtered chat's messages (and their quotes), or nil when its filter is Off.
         func filtered(_ msgs: [Message], _ q: [String: Message], _ c: Conversation) -> [Int64: FilterOutcome]? {
             guard let p = state.filterPolicy(for: c.id) else { return nil }
             var seen = Set<Int64>()
-            let items = (msgs + Array(q.values)).filter { seen.insert($0.id).inserted }.map { filterItem($0, store, attachRows) }
+            let items = (msgs + Array(q.values)).filter { seen.insert($0.id).inserted }.map { filterItem($0, store, scope) }
             return filter.evaluate(items, policy: p, allowed: Set(state.chats[c.id]?.filterAllowedMessages ?? []))
         }
         func render(_ m: Message, _ c: Conversation, _ q: [String: Message], _ f: [Int64: FilterOutcome]?) -> JSON {
@@ -492,11 +572,17 @@ public final class Gate {
             let shown = convs.filter { c in
                 q.isEmpty || c.displayName.lowercased().contains(q) || c.participants.contains { $0.handle.lowercased().contains(q) || ($0.name ?? "").lowercased().contains(q) }
             }
-            // Only chats with read/waiting access reveal activity, so only they are ordered by it.
-            // Everything else is sorted by name, so the order can't hint at new messages.
-            let reveals = { (c: Conversation) in let a = state.access(c.id); return a.read || a.waiting || a.activity }
-            let ordered = shown.filter(reveals) + shown.filter { !reveals($0) }
-                .sorted { ($0.displayName.lowercased(), $0.id) < ($1.displayName.lowercased(), $1.id) }
+            // Only chats with read/waiting access reveal activity, and only inside their history window, so
+            // only those are ordered by it. Everything else is sorted by name, so the order can't hint at
+            // new messages, or at older ones outside a window.
+            let visibleLast = { (c: Conversation) -> Date? in
+                let a = state.access(c.id)
+                guard a.read || a.waiting || a.activity, let d = c.lastActivity, inWindow(d, c) else { return nil }
+                return d
+            }
+            let byName = { (x: Conversation, y: Conversation) in (x.displayName.lowercased(), x.id) < (y.displayName.lowercased(), y.id) }
+            let ordered = shown.filter { visibleLast($0) != nil }.sorted { (visibleLast($0)!, $0.id) > (visibleLast($1)!, $1.id) }
+                + shown.filter { visibleLast($0) == nil }.sorted(by: byName)
             let items: [JSON] = ordered.map { c in
                 let a = state.access(c.id)
                 var o: [String: JSON] = [
@@ -504,8 +590,9 @@ public final class Gate {
                     "participants": .array(c.participants.map { ["name": JSON($0.name), "handle": .string($0.handle)] }),
                     "allowed": .array(Self.labels(a).map { .string($0) }),
                 ]
-                if a.read || a.waiting || a.activity, let d = c.lastActivity { o["last_activity"] = .string(iso(d)) }
+                if let d = visibleLast(c) { o["last_activity"] = .string(iso(d)) }
                 if !a.anyEnabled { o["note"] = "Locked. Only the name and number are visible until the user allows more." }
+                else if let n = historyNote(c) { o["history"] = .string(n) }
                 return .object(o)
             }
             let open = shown.filter { state.access($0.id).anyEnabled }.count
@@ -514,12 +601,14 @@ public final class Gate {
         case "read_chat":
             let c = try chat(\.read, "reading")
             let limit = clamp(args["limit"]?.int, 40, 200)
-            let page = try store.messages(inChats: c.chatRowIDs, beforeID: args["before_message_id"]?.int.map(Int64.init), limit: limit)
+            let page = try store.messages(inChats: c.chatRowIDs, beforeID: args["before_message_id"]?.int.map(Int64.init),
+                                          limit: limit, notBefore: cutoff(c)).filter { inWindow($0.date, c) }
             let q = quotes(page, c)
             let f = filtered(page, q, c)
             let msgs = page.reversed().map { render($0, c, q, f) }
             var out: [String: JSON] = ["chat_id": .string(c.id), "name": .string(c.displayName), "messages": .array(msgs)]
             if page.count == limit, let oldest = page.last { out["older_messages_cursor"] = JSON(oldest.id) }
+            if let n = historyNote(c) { out["history"] = .string(n) }
             if let p = state.filterPolicy(for: c.id) {
                 out["note"] = .string(Self.filterNote + (p.attachments == .check && state.access(c.id).attachments ? " " + Self.photoCheckNote : ""))
             }
@@ -532,6 +621,8 @@ public final class Gate {
             var scope = convs.filter { state.access($0.id).read }
             if args["chat_id"]?.string != nil { scope = [try chat(\.read, "reading")] }
             let byRow = Dictionary(scope.flatMap { c in c.chatRowIDs.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
+            // Each chat is searched only inside its own history window.
+            let searchScopes = scope.map { MessagesStore.SearchScope(rows: $0.chatRowIDs, notBefore: cutoff($0)) }
             let limit = clamp(args["limit"]?.int, 20, 50)
             let anyFiltered = scope.contains { state.filterPolicy(for: $0.id) != nil }
             var t = FilterTally(), dropped = 0
@@ -543,7 +634,8 @@ public final class Gate {
             var rawLimit = limit
             while true {
                 t = FilterTally(); dropped = 0; results = []; hitChats = []
-                let hits = try store.search(q, inChats: Array(byRow.keys), limit: rawLimit)
+                let hits = try store.search(q, in: searchScopes, limit: rawLimit)
+                    .filter { m in byRow[m.chatRowID].map { inWindow(m.date, $0) } ?? false }
                 // Group hits per chat so each filtered chat is judged once, with its own settings.
                 var perChat: [String: (Conversation, [Message])] = [:]
                 for m in hits { if let c = byRow[m.chatRowID] { perChat[c.id, default: (c, [])].1.append(m) } }
@@ -572,17 +664,19 @@ public final class Gate {
 
         case "waiting_on_reply":
             let days = clamp(args["days"]?.int, 14, 90)
-            let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+            let lookBack = now.addingTimeInterval(-Double(days) * 86400)
             var rows: [(Date, JSON)] = []
             var t = FilterTally()
             for c in convs {
                 let a = state.access(c.id)
                 guard a.waiting || a.activity else { continue }
                 // Timing comes from the metadata-only query; text is fetched only when Read is on.
-                guard let last = try store.activity(inChats: c.chatRowIDs, limit: 1).first, !last.isFromMe, last.date > cutoff else { continue }
+                // Only messages inside the chat's history window count; with none, the chat isn't waiting.
+                guard let last = try store.activity(inChats: c.chatRowIDs, limit: 1, notBefore: cutoff(c)).first,
+                      inWindow(last.date, c), !last.isFromMe, last.date > lookBack else { continue }
                 var o: [String: JSON] = ["chat_id": .string(c.id), "name": .string(c.displayName),
                                          "waiting_since": .string(iso(last.date)), "last_message_from": .string(senderLabel(last.senderHandle))]
-                if a.read, let m = try store.latestMessage(inChats: c.chatRowIDs), m.id == last.id {
+                if a.read, let m = try store.latestMessage(inChats: c.chatRowIDs, notBefore: cutoff(c)), m.id == last.id {
                     if let f = filtered([m], [:], c) {
                         let out = f[m.id] ?? FilterOutcome(withheld: true)
                         t.add(out)
@@ -605,9 +699,9 @@ public final class Gate {
                 guard let d = parseSince(raw) else { throw Denied(message: "since must be an ISO 8601 time, like 2026-11-13T09:00:00Z.", chat: c) }
                 since = d
             }
-            let page = try store.activity(inChats: c.chatRowIDs, since: since,
-                                          beforeID: args["before_message_id"]?.int.map(Int64.init), limit: limit)
-            let sum = try store.activitySummary(inChats: c.chatRowIDs)
+            let page = try store.activity(inChats: c.chatRowIDs, since: since, beforeID: args["before_message_id"]?.int.map(Int64.init),
+                                          limit: limit, notBefore: cutoff(c)).filter { inWindow($0.date, c) }
+            let sum = try store.activitySummary(inChats: c.chatRowIDs, notBefore: cutoff(c))
             let items: [JSON] = page.reversed().map { m in
                 var o: [String: JSON] = ["id": JSON(m.id), "time": .string(iso(m.date)),
                                          "direction": .string(m.isFromMe ? "from_me" : "incoming")]
@@ -623,6 +717,7 @@ public final class Gate {
             ]
             if page.count == limit, let oldest = page.last { out["older_messages_cursor"] = JSON(oldest.id) }
             if !state.access(c.id).read { out["note"] = "Activity only: times and direction, no message content." }
+            if let n = historyNote(c) { out["history"] = .string(n) }
             return (.json(.object(out)), "Returned activity for \(page.count) messages (no content)", c)
 
         case "list_attachments":
@@ -632,12 +727,14 @@ public final class Gate {
                              chat: c, summary: "Blocked: the content filter withholds photos & files in this chat")
             }
             let limit = clamp(args["limit"]?.int, 30, 100)
-            let items = try store.attachments(inChats: c.chatRowIDs, beforeID: args["before_attachment_id"]?.int.map(Int64.init), limit: limit)
+            let items = try store.attachments(inChats: c.chatRowIDs, beforeID: args["before_attachment_id"]?.int.map(Int64.init),
+                                              limit: limit, notBefore: cutoff(c))
             // In a filtered chat, an attachment on a withheld message is left out, and names are masked.
             let f = filtered(items.map(\.1), [:], c)
             var heldBack = 0
             let list: [JSON] = items.filter { a, m in
-                guard attachmentReachable(a.id, store, attachRows) else { return false }
+                // Every chat it appears in must allow it, and each of those chats' window must include it.
+                guard inWindow(m.date, c), attachmentReachable(a.id, store, scope) else { return false }
                 if let f, f[m.id].map({ !$0.withheld }) != true { return false }
                 // Check mode: only photos that already passed. The rest are checked in the background.
                 guard photoCleared(a, store, scope) else { heldBack += 1; return false }
@@ -648,6 +745,7 @@ public final class Gate {
                         "type": JSON(a.mimeType), "name": JSON(name), "size_bytes": JSON(a.bytes)]
             }
             var out: [String: JSON] = ["chat_id": .string(c.id), "attachments": .array(list)]
+            if let n = historyNote(c) { out["history"] = .string(n) }
             // Page on the raw list, so a page whose items are all hidden doesn't look like the end.
             if items.count == limit, let last = items.last { out["older_attachments_cursor"] = JSON(last.0.id) }
             let checking = state.filterPolicy(for: c.id)?.attachments == .check
@@ -655,7 +753,7 @@ public final class Gate {
             return (.json(.object(out)), "Listed \(list.count) attachments" + (f != nil ? " (content filter on" + (checking ? ", \(heldBack) photos held back)" : ")") : ""), c)
 
         case "get_attachment":
-            return try getAttachment(args, convs, state, store)
+            return try getAttachment(args, convs, state, store, now)
 
         case "draft_reply":
             let c = try chat(\.draft, "drafting replies")
@@ -747,13 +845,13 @@ public final class Gate {
                 detail == nil ? "Auto-sent a message (\(text.count) characters)" : "Auto-send failed", c)
     }
 
-    private func getAttachment(_ args: JSON, _ convs: [Conversation], _ state: PermissionState, _ store: MessagesStore) throws -> (ToolResult, String, Conversation?) {
+    private func getAttachment(_ args: JSON, _ convs: [Conversation], _ state: PermissionState, _ store: MessagesStore, _ now: Date) throws -> (ToolResult, String, Conversation?) {
         let notAvailable = Denied(message: Self.attachmentUnavailable)
         guard let id = args["attachment_id"]?.int.map(Int64.init), let info = try store.attachment(id: id) else { throw notAvailable }
-        // Every chat this attachment appears in must allow attachments. Fail closed otherwise.
-        let scope = attachScope(convs, state)
-        let allowedRows = scope.rows
-        guard attachmentReachable(id, store, allowedRows) else { throw notAvailable }
+        // Every chat this attachment appears in must allow attachments, and each one's history window must
+        // include it. Fail closed otherwise, with the same answer as an attachment that doesn't exist.
+        let scope = attachScope(convs, state, now)
+        guard attachmentReachable(id, store, scope) else { throw notAvailable }
         let rows = Set(try store.chatRowIDs(forAttachment: id))
         let chat = convs.first { !rows.isDisjoint(with: $0.chatRowIDs) }
 
@@ -763,9 +861,9 @@ public final class Gate {
         for c in convs where !rows.isDisjoint(with: c.chatRowIDs) {
             guard let p = state.filterPolicy(for: c.id) else { continue }
             inFilteredChat = true
-            let msgs = try store.messages(forAttachment: id, inChats: c.chatRowIDs)
+            let msgs = try store.messages(forAttachment: id, inChats: c.chatRowIDs, notBefore: state.historyCutoff(c.id, now: now))
             guard !msgs.isEmpty else { throw notAvailable }
-            let outcomes = filter.evaluate(msgs.map { filterItem($0, store, allowedRows) }, policy: p,
+            let outcomes = filter.evaluate(msgs.map { filterItem($0, store, scope) }, policy: p,
                                            allowed: Set(state.chats[c.id]?.filterAllowedMessages ?? []))
             for m in msgs {
                 guard let o = outcomes[m.id], !o.withheld else { throw notAvailable }
@@ -827,10 +925,14 @@ public final class Gate {
 
     // MARK: - Rendering
 
-    /// An attachment is reachable only if every chat it appears in allows attachments.
-    private func attachmentReachable(_ id: Int64, _ store: MessagesStore, _ allowedRows: Set<Int64>) -> Bool {
-        guard let rows = try? Set(store.chatRowIDs(forAttachment: id)), !rows.isEmpty else { return false }
-        return rows.isSubset(of: allowedRows)
+    /// An attachment is reachable only if every chat it appears in allows attachments, and each of those
+    /// chats' history window includes a message carrying it.
+    private func attachmentReachable(_ id: Int64, _ store: MessagesStore, _ scope: AttachScope) -> Bool {
+        guard let rows = try? Set(store.chatRowIDs(forAttachment: id)), !rows.isEmpty, rows.isSubset(of: scope.rows) else { return false }
+        let windowed = rows.filter { scope.cutoffs[$0] != nil }
+        guard !windowed.isEmpty else { return true }
+        guard let latest = try? store.attachmentLatestDates(id) else { return false }
+        return windowed.allSatisfy { r in latest[r].map { $0 >= scope.cutoffs[r]! } ?? false }
     }
 
     /// Check mode: the photo already passed for every Check-mode chat it appears in (or the user allowed it
@@ -868,7 +970,7 @@ public final class Gate {
             }
             o["reply_to"] = ["id": JSON(orig.id), "from": .string(senderLabel(orig)), "text": JSON(quoted.map { String($0.prefix(200)) })]
         }
-        let visible = m.attachments.filter { attachmentReachable($0.id, store, scope.rows) && photoCleared($0, store, scope) }
+        let visible = m.attachments.filter { attachmentReachable($0.id, store, scope) && photoCleared($0, store, scope) }
         if !visible.isEmpty {
             o["attachments"] = .array(visible.map { a in
                 ["attachment_id": JSON(a.id), "type": JSON(a.mimeType),
@@ -907,6 +1009,8 @@ public final class Gate {
     struct AttachScope {
         /// Rows whose attachments may be shown at all.
         let rows: Set<Int64>
+        /// History windows: rows of chats that share only part of their history, with the oldest time shown.
+        var cutoffs: [Int64: Date] = [:]
         /// Rows of filtered chats in Check mode, where each photo must pass the check.
         let checked: [Int64: CheckedChat]
         /// The Check-mode chats among some chat rows, once each.
@@ -916,20 +1020,22 @@ public final class Gate {
         }
     }
 
-    func attachScope(_ convs: [Conversation], _ state: PermissionState) -> AttachScope {
+    func attachScope(_ convs: [Conversation], _ state: PermissionState, _ now: Date) -> AttachScope {
         var checked: [Int64: CheckedChat] = [:]
+        var cutoffs: [Int64: Date] = [:]
+        for c in convs { if let d = state.historyCutoff(c.id, now: now) { for r in c.chatRowIDs { cutoffs[r] = d } } }
         for c in convs where state.access(c.id).attachments {
             guard let p = state.filterPolicy(for: c.id), p.attachments == .check else { continue }
             let cc = CheckedChat(id: c.id, policy: p, allowedPhotos: Set(state.chats[c.id]?.filterAllowedPhotos ?? []))
             for r in c.chatRowIDs { checked[r] = cc }
         }
-        return AttachScope(rows: attachmentRows(convs, state), checked: checked)
+        return AttachScope(rows: attachmentRows(convs, state), cutoffs: cutoffs, checked: checked)
     }
 
     /// What the filter judges for a message: its text and the names of attachments the assistant could see.
     /// Background warming and requests build items the same way, so cached verdicts line up.
-    func filterItem(_ m: Message, _ store: MessagesStore, _ attachRows: Set<Int64>) -> ContentFilter.Item {
-        let visible = m.attachments.filter { attachmentReachable($0.id, store, attachRows) }
+    func filterItem(_ m: Message, _ store: MessagesStore, _ scope: AttachScope) -> ContentFilter.Item {
+        let visible = m.attachments.filter { attachmentReachable($0.id, store, scope) }
         return ContentFilter.Item(id: m.id, text: m.text, attachments: visible.map { (id: $0.id, name: $0.name) })
     }
 

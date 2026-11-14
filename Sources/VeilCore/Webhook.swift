@@ -278,7 +278,7 @@ public final class WebhookNotifier {
                 if chatNames == nil { chatNames = try store.chatIdentifiers() }
                 // Policy check: only chats the user has opened. Locked, hidden and paused chats are
                 // dropped here, before anything is queued.
-                guard let chat = chatNames?[chatRow], allowed(chat, fromMe: r.isFromMe) else { continue }
+                guard let chat = chatNames?[chatRow], allowed(chat, fromMe: r.isFromMe, date: r.date, now: now) else { continue }
                 coalescer.add(NewMessagePing(chatID: chat, messageID: r.id, receivedAt: r.date, fromMe: r.isFromMe))
             }
             lastSeen = newest
@@ -291,8 +291,12 @@ public final class WebhookNotifier {
     }
 
     /// Incoming: Read or Activity. The user's own messages: Activity only, and only if the config allows.
-    private func allowed(_ chat: String, fromMe: Bool) -> Bool {
-        let a = permissions.state.access(chat)
+    /// A message outside the chat's history window (e.g. one from before "Only after I shared this chat")
+    /// is never announced. An ended time limit counts as locked.
+    private func allowed(_ chat: String, fromMe: Bool, date: Date, now: Date) -> Bool {
+        let state = permissions.state
+        let a = state.access(chat, now: now)
+        if let cutoff = state.historyCutoff(chat, now: now), date < cutoff { return false }
         if fromMe { return a.activity && !a.hidden && config?.pingReplies == true }
         return a.seesActivity
     }
@@ -302,7 +306,7 @@ public final class WebhookNotifier {
     private func deliver(_ p: NewMessagePing, attempt: Int) {
         guard let cfg = config else { return }
         // Checked again at send time, so a chat locked during the quiet period or a retry is never pinged.
-        guard allowed(p.chatID, fromMe: p.fromMe) else {
+        guard allowed(p.chatID, fromMe: p.fromMe, date: p.receivedAt, now: Date()) else {
             log.append(entry("new_message", p, attempt, .dropped, "Chat was locked before the ping went out"))
             return
         }

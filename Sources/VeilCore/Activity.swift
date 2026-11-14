@@ -28,18 +28,21 @@ public struct ActivitySummary: Equatable, Sendable {
 
 extension MessagesStore {
     /// Real messages only (no tapbacks or system events), newest first. Scoped to the given chat rows.
-    func activity(inChats chats: [Int64], since: Date? = nil, beforeID: Int64? = nil, limit: Int) throws -> [ActivityItem] {
+    /// `notBefore` is the chat's history window; `since` can narrow it further but never widen it.
+    func activity(inChats chats: [Int64], since: Date? = nil, beforeID: Int64? = nil, limit: Int, notBefore: Date? = nil) throws -> [ActivityItem] {
         guard !chats.isEmpty else { return [] }
+        let since = [since, notBefore].compactMap { $0 }.max()
         let inList = Array(repeating: "?", count: chats.count).joined(separator: ",")
         var params: [SQLiteDB.Value] = chats.map { .int($0) }
         var extra = ""
         if let since { extra += " AND m.date >= ?"; params.append(.int(appleTimestamp(since))) }
         if let b = beforeID {
             // Same cursor rule as read_chat: the cursor must belong to these chats.
+            let (window, windowParams) = Self.window(notBefore)
             guard let d = try db.query("""
                 SELECT m.date FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-                WHERE m.ROWID = ? AND cmj.chat_id IN (\(inList)) LIMIT 1
-                """, [.int(b)] + chats.map { .int($0) }).first?.int("date") else { return [] }
+                WHERE m.ROWID = ? AND cmj.chat_id IN (\(inList)) \(window) LIMIT 1
+                """, [.int(b)] + chats.map { .int($0) } + windowParams).first?.int("date") else { return [] }
             extra += " AND (m.date < ? OR (m.date = ? AND m.ROWID < ?))"
             params += [.int(d), .int(d), .int(b)]
         }
@@ -58,16 +61,18 @@ extension MessagesStore {
         }
     }
 
-    func activitySummary(inChats chats: [Int64]) throws -> ActivitySummary {
+    /// With `notBefore` (the chat's history window), messages older than it don't count, as if they didn't exist.
+    func activitySummary(inChats chats: [Int64], notBefore: Date? = nil) throws -> ActivitySummary {
         guard !chats.isEmpty else { return ActivitySummary(lastIncoming: nil, lastFromMe: nil) }
         let inList = Array(repeating: "?", count: chats.count).joined(separator: ",")
+        let (window, windowParams) = Self.window(notBefore)
         let r = try db.query("""
             SELECT MAX(CASE WHEN m.is_from_me = 0 THEN m.date END) AS last_in,
                    MAX(CASE WHEN m.is_from_me = 1 THEN m.date END) AS last_out
             FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-            WHERE cmj.chat_id IN (\(inList))
+            WHERE cmj.chat_id IN (\(inList)) \(window)
               AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0
-            """, chats.map { .int($0) }).first
+            """, chats.map { .int($0) } + windowParams).first
         return ActivitySummary(lastIncoming: r?.int("last_in").map(appleDate), lastFromMe: r?.int("last_out").map(appleDate))
     }
 }
