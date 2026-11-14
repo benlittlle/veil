@@ -19,6 +19,27 @@ public enum DemoData {
         public static let unknown = "+15550199999", climbing = "chat100", family = "chat200"
     }
 
+    /// Markers in messages at known ages, for history-window tests. Each message carries the marker of the
+    /// shortest window that leaves it out, so tests can check nothing older than a window comes back.
+    public enum Aged {
+        /// 2 days old: outside "Last 24 hours".
+        public static let pastDay = "AGED1D"
+        /// 10 days old: outside "Last 24 hours" and "Last 7 days".
+        public static let pastWeek = "AGED7D"
+        /// 45 days old: outside every window.
+        public static let pastMonth = "AGED30D"
+        public static let all = [pastDay, pastWeek, pastMonth]
+        /// Markers a window must never return.
+        public static func hidden(by w: HistoryWindow) -> [String] {
+            switch w {
+            case .all: return []
+            case .day, .sinceShared: return all
+            case .week: return [pastWeek, pastMonth]
+            case .month: return [pastMonth]
+            }
+        }
+    }
+
     /// Permissions used by demo mode (tests set their own).
     public static let demoAccess: [String: ChatAccess] = [
         ID.mom: ChatAccess(read: true, waiting: true, draft: true, send: true, attachments: true),
@@ -141,8 +162,51 @@ public enum DemoData {
         // Attachment 4: points outside the attachments folder (path traversal attempt).
         try db.query("INSERT INTO attachment VALUES (4, 'ATT-4', ?, 'text/plain', 'passwd', 100)", [.text(atts.path + "/../../../etc/passwd")])
         try db.query("INSERT INTO message_attachment_join VALUES (?, 4)", [.int(momForward)])
-
         return (dbURL, atts)
+    }
+
+    /// Older history at known ages (see `Aged`), for the history windows. Added on top of `build`; the history
+    /// tests and demo mode use it. Message ids start at 8001, attachments are 5 and 6.
+    /// - Mom: 2, 10 and 45 days old (on both chat rows), a 10-day-old photo (attachment 5), a recent reply
+    ///   quoting a 10-day-old message, and a recent photo (attachment 6) that Alex's chat also has from 10 days ago.
+    /// - Alex: 10 and 45 days old. Climbing crew: 10 days old.
+    public static func addAgedHistory(db dbURL: URL, now: Date = Date()) throws {
+        let db = try SQLiteDB(path: dbURL.path, readOnly: false)
+        let atts = dbURL.deletingLastPathComponent().appendingPathComponent("Attachments")
+        var id: Int64 = 8_000
+        @discardableResult
+        func msg(_ chat: Int64, _ from: Int64?, _ text: String, hoursAgo: Double, replyTo: String? = nil) throws -> (Int64, String) {
+            id += 1
+            let ts = appleTimestamp(now.addingTimeInterval(-hoursAgo * 3600))
+            try db.query("INSERT INTO message (ROWID, guid, text, handle_id, date, is_from_me, thread_originator_guid) VALUES (?,?,?,?,?,?,?)",
+                         [.int(id), .text("AGED-\(id)"), .text(text), .int(from ?? 0), .int(ts), .int(from == nil ? 1 : 0),
+                          replyTo.map { .text($0) } ?? .null])
+            try db.query("INSERT INTO chat_message_join VALUES (?, ?, ?)", [.int(chat), .int(id), .int(ts)])
+            return (id, "AGED-\(id)")
+        }
+        func attach(_ message: Int64, _ aid: Int64, _ name: String, color: (CGFloat, CGFloat, CGFloat)) throws {
+            let file = atts.appendingPathComponent("aged/\(aid)/\(name)")
+            if try db.query("SELECT 1 FROM attachment WHERE ROWID = ?", [.int(aid)]).isEmpty {
+                try writePNG(file, color: color)
+                let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+                try db.query("INSERT INTO attachment VALUES (?, ?, ?, 'image/png', ?, ?)",
+                             [.int(aid), .text("ATT-\(aid)"), .text(file.path), .text(name), .int(size ?? 0)])
+            }
+            try db.query("INSERT INTO message_attachment_join VALUES (?, ?)", [.int(message), .int(aid)])
+            try db.query("UPDATE message SET cache_has_attachments = 1 WHERE ROWID = ?", [.int(message)])
+        }
+        try msg(1, 1, "\(Aged.pastDay) Lunch at the lake was lovely", hoursAgo: 48)
+        let (_, oldGuid) = try msg(2, 1, "\(Aged.pastWeek) Your old passport is in the hall drawer", hoursAgo: 240)   // SMS row
+        try msg(1, nil, "\(Aged.pastMonth) Happy birthday Mom!", hoursAgo: 45 * 24)
+        let (beachMsg, _) = try msg(1, 1, "\(Aged.pastWeek) Beach day", hoursAgo: 241)
+        try msg(1, nil, "Found it, thanks", hoursAgo: 22, replyTo: oldGuid)
+        let (momShared, _) = try msg(1, 1, "Is this the one Alex sent?", hoursAgo: 21)
+        let (alexOld, _) = try msg(3, 2, "\(Aged.pastWeek) Here's the trail map", hoursAgo: 240)
+        try msg(3, nil, "\(Aged.pastMonth) Welcome to the club", hoursAgo: 45 * 24)
+        try msg(6, 4, "\(Aged.pastWeek) Who has the rope?", hoursAgo: 240)
+        try attach(beachMsg, 5, "\(Aged.pastWeek)-beach.png", color: (0.9, 0.8, 0.5))
+        try attach(momShared, 6, "\(Aged.pastWeek)-trail.png", color: (0.4, 0.6, 0.3))
+        try attach(alexOld, 6, "\(Aged.pastWeek)-trail.png", color: (0.4, 0.6, 0.3))
     }
 
     /// Demo mode only (not used by tests): sensitive-looking messages in Alex's chat, so the

@@ -15,9 +15,11 @@ final class Harness {
     init(access: [String: ChatAccess] = Harness.defaultAccess, sender custom: MessageSender? = nil,
          autoSends: ((URL) -> AutoSendHistory)? = nil, classifier: ContentClassifier? = nil,
          imageClassifier: ImageClassifier? = nil, recognizer: TextRecognizer? = VisionTextRecognizer(),
-         nudity: NudityDetector? = nil) throws {
+         nudity: NudityDetector? = nil, aged: Bool = false) throws {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("veil-test-\(UUID().uuidString)")
         let (db, atts) = try DemoData.build(at: dir)
+        // Older history at known ages, for the history-window tests.
+        if aged { try DemoData.addAgedHistory(db: db) }
         permissionsURL = dir.appendingPathComponent("permissions.json")
         let store = PermissionStore(url: permissionsURL, secrets: secrets)
         gate = Gate(permissions: store, log: AccessLog(url: dir.appendingPathComponent("access.jsonl")),
