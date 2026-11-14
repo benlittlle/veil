@@ -74,12 +74,16 @@ public struct ChatSettingsChange: Equatable, Sendable {
     public var actions: [FilterCategory: FilterAction] = [:]
     public var strictness: FilterStrictness?
     public var photoMode: PhotoMode?
+    /// How far back the assistant can read.
+    public var history: HistoryWindow?
+    /// How long the chat stays shared, counted from when the change is applied.
+    public var shareFor: ShareDuration?
     public init() {}
 
     var changesPolicy: Bool { !actions.isEmpty || strictness != nil || photoMode != nil }
 
     /// The chat's settings after this change. Throws (and nothing is saved) when the result breaks a rule.
-    public func applied(to before: ChatAccess, in state: PermissionState) throws -> ChatAccess {
+    public func applied(to before: ChatAccess, in state: PermissionState, now: Date = Date()) throws -> ChatAccess {
         var a = before
         for s in Switch.allCases { if let v = switches[s] { a.set(s.keyPath, v) } }
         if let on = autoSend {
@@ -96,7 +100,28 @@ public struct ChatSettingsChange: Equatable, Sendable {
             if let m = photoMode { p.attachments = m }
             a.filterPolicy = p
         }
+        if let h = history { a.history = h }
+        if let d = shareFor {
+            if d != .always && !a.hasAnySwitch {
+                throw SettingsError("share_for needs something shared in this chat. Turn on a switch in the same request, or leave share_for out. Nothing was changed.")
+            }
+            a.expires = d.expiry(from: now)
+        }
         return a
+    }
+
+    /// True when this change gives the assistant more: a history window reaching further back, or a time
+    /// limit that's later or removed. That always needs the user's approval, even in Apply directly.
+    /// Narrowing (a shorter window, an earlier end) doesn't.
+    public func widens(from before: ChatAccess, in state: PermissionState, now: Date = Date()) -> Bool {
+        guard history != nil || shareFor != nil, let changed = try? applied(to: before, in: state, now: now) else { return false }
+        let after = changed.settled(after: before, now: now)
+        if history != nil, (after.historyCutoff(now: now) ?? .distantPast) < (before.historyCutoff(now: now) ?? .distantPast) { return true }
+        if shareFor != nil, let end = before.expires, before.hasAnySwitch, after.hasAnySwitch {
+            guard let newEnd = after.expires else { return true }
+            return newEnd > end
+        }
+        return false
     }
 
     /// PINs & verification codes reach the assistant: the filter is off, or it allows them.
@@ -112,8 +137,8 @@ public struct ChatSettingsChange: Equatable, Sendable {
     }
 
     /// What actually changes, in plain language. Empty when every value is already set.
-    public func lines(from before: ChatAccess, in state: PermissionState) -> [SettingLine] {
-        guard let after = try? applied(to: before, in: state) else { return [] }
+    public func lines(from before: ChatAccess, in state: PermissionState, now: Date = Date()) -> [SettingLine] {
+        guard let after = try? applied(to: before, in: state, now: now) else { return [] }
         var out: [SettingLine] = []
         func toggle(_ title: String, _ was: Bool, _ now: Bool, _ extra: String = "") {
             guard was != now else { return }
@@ -132,6 +157,13 @@ public struct ChatSettingsChange: Equatable, Sendable {
         }
         if p0.attachments != p1.attachments {
             out.append(SettingLine(phrase: "set filtered photos & files to \(p1.attachments.title)", short: "Photos & files: \(p1.attachments.title)"))
+        }
+        if before.history != after.history {
+            out.append(SettingLine(phrase: "set the history it can see to “\(after.history.title)”", short: "History: \(after.history.title)"))
+        }
+        if let d = shareFor, after.hasAnySwitch, !(d == .always && before.expires == nil) {
+            out.append(d == .always ? SettingLine(phrase: "share with no time limit", short: "Shared with no time limit")
+                                    : SettingLine(phrase: "share for \(d.title.lowercased())", short: "Shared for \(d.title.lowercased())"))
         }
         return out
     }
@@ -248,7 +280,7 @@ extension FilterCategory {
 }
 
 enum SettingsArgs {
-    static let chatKeys = ["chat_id"] + ChatSettingsChange.Switch.allCases.map(\.rawValue) + ["auto_send", "filter"]
+    static let chatKeys = ["chat_id"] + ChatSettingsChange.Switch.allCases.map(\.rawValue) + ["auto_send", "filter", "history", "share_for"]
     static let filterKeys = ["on", "strictness", "photos", "categories"]
     static let appKeys = ["paused", "assistant_name", "new_message_pings", "ping_when_i_reply", "auto_send", "auto_send_limit"]
     static let limitKeys = ["count", "minutes"]
@@ -286,6 +318,8 @@ enum SettingsArgs {
         var c = ChatSettingsChange()
         for s in ChatSettingsChange.Switch.allCases { if let v = try bool(o, s.rawValue) { c.switches[s] = v } }
         c.autoSend = try bool(o, "auto_send")
+        c.history = try choice(o, "history", HistoryWindow.self, HistoryWindow.allCases)
+        c.shareFor = try choice(o, "share_for", ShareDuration.self, ShareDuration.allCases)
         if c.autoSend == true && c.switches[.send] == false {
             throw SettingsError("Auto-send needs Send turned on, so \"auto_send\": true can't go with \"send\": false. Nothing was changed.")
         }

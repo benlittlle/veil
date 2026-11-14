@@ -171,13 +171,14 @@ public final class MCPServer {
         tool("get_settings", "Get Veil's settings",
              "Veil's app settings you may change, and settings_changes: 'ask' (the user approves each change in Veil) or 'direct' (changes apply right away and the user is notified)."),
         tool("get_chat_settings", "Get a chat's settings",
-             "One chat's switches (read, activity, waiting, drafts, send, photos), auto_send and content filter.",
+             "One chat's switches (read, activity, waiting, drafts, send, photos), auto_send, content filter, history (how far back you can read) and shared_until (when sharing ends on its own; null for no time limit).",
              ["chat_id": chatID], required: ["chat_id"]),
         tool("change_chat_settings", "Change a chat's settings",
              "Changes one chat's settings. Include only what should change; everything else stays as it is. Unknown settings are an error and nothing changes. "
              + "auto_send needs send on (in this request or already). Turning a switch off also discards drafts and unsent requests for the chat. "
              + "In 'ask' mode you get status 'pending' and a request_id: the user decides in Veil (see check_settings_request). In 'direct' mode the change is applied right away (status 'applied'). "
              + "Allowing PINs & verification codes (filter.categories.codes = 'allow', or turning the filter off where it masks codes) always needs the user's approval, even in 'direct' mode. "
+             + "So does sharing more: a history window that reaches further back, or a share_for that ends later than now or removes the time limit. A shorter window or an earlier end applies directly in 'direct' mode. "
              + "Chats can't be hidden or unhidden.",
              ["chat_id": chatID,
               "read": ["type": "boolean", "description": "Read & summarize messages."],
@@ -187,6 +188,10 @@ public final class MCPServer {
               "send": ["type": "boolean", "description": "Ask to send messages (the user approves each one)."],
               "photos": ["type": "boolean", "description": "See photos & files."],
               "auto_send": ["type": "boolean", "description": "Send text without asking, within the rate limit. Needs send."],
+              "history": ["type": "string", "enum": ["all", "24h", "7d", "30d", "since_shared"],
+                          "description": "How far back you can read: everything, the last 24 hours, 7 days, 30 days, or only messages since the user shared the chat."],
+              "share_for": ["type": "string", "enum": ["always", "1h", "tonight", "24h", "7d"],
+                            "description": "How long the chat stays shared, from now. When it ends, every switch goes off. 'tonight' ends at midnight. Needs something shared."],
               "filter": ["type": "object", "additionalProperties": false, "description": "This chat's content filter.",
                          "properties": ["on": bool,
                                         "strictness": ["type": "string", "enum": ["relaxed", "balanced", "strict"]],

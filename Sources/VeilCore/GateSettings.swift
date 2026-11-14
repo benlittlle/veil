@@ -60,14 +60,19 @@ extension Gate {
             let c = try chat()
             let change: ChatSettingsChange
             do { change = try SettingsArgs.chat(args) } catch let e as SettingsError { throw invalid(e, c) }
+            let now = clock()
+            // `state` already has ended time limits locked, so a change never builds on an expired share.
             let before = state.chats[c.id] ?? .none
-            do { _ = try change.applied(to: before, in: state) } catch let e as SettingsError { throw invalid(e, c) }
-            let lines = change.lines(from: before, in: state)
+            do { _ = try change.applied(to: before, in: state, now: now) } catch let e as SettingsError { throw invalid(e, c) }
+            let lines = change.lines(from: before, in: state, now: now)
             guard !lines.isEmpty else { return unchanged(c) }
             let codes = change.allowsCodes(from: before, in: state)
-            let caution = codes ? "This lets \(c.displayName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts." : nil
+            // More history, or a longer (or no) time limit, is more access: the user always decides.
+            let widens = change.widens(from: before, in: state, now: now)
+            let caution = codes ? "This lets \(c.displayName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts."
+                : widens ? "This gives \(preferences.assistantName) more of \(c.displayName) than it has now (more history, or more time)." : nil
             let target = SettingsRequest.Target.chat(id: c.id, name: c.displayName, change: change)
-            let direct = mode == .direct && !codes && takeDirectChangeSlot()
+            let direct = mode == .direct && !codes && !widens && takeDirectChangeSlot()
             if direct {
                 let r = SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client, caution: nil, status: .approved)
                 do { try applyChat(c.id, change, markReviewed: false) }
@@ -77,7 +82,7 @@ extension Gate {
             }
             return try ask(SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client,
                                            caution: caution, status: .pending), c, codes: codes && mode == .direct,
-                           overLimit: mode == .direct && !codes)
+                           widens: widens && !codes && mode == .direct, overLimit: mode == .direct && !codes && !widens)
 
         case "change_app_settings":
             let change: AppSettingsChange
@@ -124,7 +129,7 @@ extension Gate {
         return (.json(.object(out)), "Changed settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary)", c)
     }
 
-    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
+    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, widens: Bool = false, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
         lock.lock()
         guard _settingsRequests.filter({ $0.status == .pending }).count < Self.maxPendingSettings else {
             lock.unlock()
@@ -138,6 +143,7 @@ extension Gate {
         let minutes = Int(settingsRequestLifetime / 60)
         let l = Self.directChangeLimit
         let why = codes ? "Allowing PINs & verification codes always needs the user's approval. "
+            : widens ? "Sharing more history, or sharing for longer, always needs the user's approval. "
             : overLimit ? "More than \(l.count) changes in \(Int(l.seconds / 60)) minutes need the user's approval. " : ""
         return (.json(["status": "pending", "request_id": .string(r.id), "changes": .array(r.lines.map { .string($0.short) }),
                        "note": .string(why + "The user will see this in Veil and decide. Use check_settings_request to follow up; it expires after \(minutes) minutes.")]),
@@ -147,7 +153,8 @@ extension Gate {
     // MARK: - Applying (one atomic write each; the same code paths as the app)
 
     func applyChat(_ chatID: String, _ change: ChatSettingsChange, markReviewed: Bool) throws {
-        try updateChat(chatID, markReviewed: markReviewed) { a, s in a = try change.applied(to: a, in: s) }
+        let now = clock()
+        try updateChat(chatID, markReviewed: markReviewed, now: now) { a, s in a = try change.applied(to: a, in: s, now: now) }
     }
 
     func applyApp(_ c: AppSettingsChange) throws {
@@ -259,7 +266,8 @@ extension Gate {
             "auto_send_limit": ["count": JSON(l.count), "minutes": JSON(l.minutes)],
             "note": .string((mode == .direct ? "Changes apply right away and the user is notified. "
                                              : "Each change waits for the user's approval in Veil. ")
-                            + "Allowing PINs & verification codes always needs approval. Pausing blocks every tool, these included, so only the user can unpause."),
+                            + "Allowing PINs & verification codes, sharing more history and sharing for longer always need approval. "
+                            + "Pausing blocks every tool, these included, so only the user can unpause."),
         ]
     }
 
@@ -270,6 +278,9 @@ extension Gate {
         for s in ChatSettingsChange.Switch.allCases { o[s.rawValue] = .bool(a[keyPath: s.keyPath]) }
         o["auto_send"] = .bool(a.send && a.autoSend)
         o["auto_send_active"] = .bool(state.access(c.id).autoSend)
+        o["history"] = .string(a.history.rawValue)
+        // When sharing ends on its own; null means no time limit.
+        o["shared_until"] = a.hasAnySwitch ? JSON(a.expires.map(iso)) : .null
         o["filter"] = [
             "on": .bool(a.filtered),
             "uses_default_settings": .bool(a.filterPolicy == nil),
