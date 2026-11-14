@@ -2,6 +2,102 @@ import Foundation
 import CryptoKit
 import Security
 
+/// How far back the assistant can read in one chat. All is the default and behaves as before.
+public enum HistoryWindow: String, Codable, Sendable, CaseIterable {
+    case all
+    case day = "24h"
+    case week = "7d"
+    case month = "30d"
+    /// Only messages from the moment the user shared the chat (`ChatAccess.sharedSince`).
+    case sinceShared = "since_shared"
+
+    public var title: String {
+        switch self {
+        case .all: return "All"
+        case .day: return "Last 24 hours"
+        case .week: return "Last 7 days"
+        case .month: return "Last 30 days"
+        case .sinceShared: return "Only after I shared this chat"
+        }
+    }
+
+    /// Told to the assistant. Says how far back the chat goes, never what's older.
+    public var assistantNote: String? {
+        switch self {
+        case .all: return nil
+        case .day: return "This chat shares the last 24 hours only."
+        case .week: return "This chat shares the last 7 days only."
+        case .month: return "This chat shares the last 30 days only."
+        case .sinceShared: return "This chat shares only messages since the user shared it."
+        }
+    }
+
+    var span: TimeInterval? {
+        switch self {
+        case .all, .sinceShared: return nil
+        case .day: return 86_400
+        case .week: return 7 * 86_400
+        case .month: return 30 * 86_400
+        }
+    }
+}
+
+/// How long a chat stays shared. The chosen end time is stored in `ChatAccess.expires`.
+public enum ShareDuration: String, Sendable, CaseIterable {
+    case always
+    case hour = "1h"
+    case tonight
+    case day = "24h"
+    case week = "7d"
+
+    public var title: String {
+        switch self {
+        case .always: return "Always"
+        case .hour: return "1 hour"
+        case .tonight: return "Until tonight"
+        case .day: return "24 hours"
+        case .week: return "7 days"
+        }
+    }
+
+    /// When sharing ends if it starts at `now`. nil for Always. Tonight means the coming midnight.
+    public func expiry(from now: Date, calendar: Calendar = .current) -> Date? {
+        switch self {
+        case .always: return nil
+        case .hour: return now.addingTimeInterval(3600).wholeSeconds
+        case .day: return now.addingTimeInterval(86_400).wholeSeconds
+        case .week: return now.addingTimeInterval(7 * 86_400).wholeSeconds
+        case .tonight:
+            let midnight = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now.addingTimeInterval(86_400)
+            return midnight.wholeSeconds
+        }
+    }
+
+    /// "45 more minutes", "3 more hours", "2 more days" (or "less than a minute").
+    public static func remaining(until end: Date, now: Date) -> String {
+        let s = end.timeIntervalSince(now)
+        func n(_ v: Int, _ unit: String) -> String { "\(v) more \(unit)\(v == 1 ? "" : "s")" }
+        if s < 60 { return "less than a minute" }
+        if s < 3600 { return n(Int((s / 60).rounded(.up)), "minute") }
+        if s < 86_400 * 2 { return n(max(1, Int((s / 3600).rounded())), "hour") }
+        return n(Int((s / 86_400).rounded()), "day")
+    }
+
+    /// "45 min left", "3 hr left", "2 days left".
+    public static func remainingShort(until end: Date, now: Date) -> String {
+        let s = end.timeIntervalSince(now)
+        if s < 60 { return "ending" }
+        if s < 3600 { return "\(Int((s / 60).rounded(.up))) min left" }
+        if s < 86_400 * 2 { return "\(max(1, Int((s / 3600).rounded()))) hr left" }
+        return "\(Int((s / 86_400).rounded())) days left"
+    }
+}
+
+extension Date {
+    /// Stored times are whole seconds, so the signed encoding is the same after a round trip.
+    public var wholeSeconds: Date { Date(timeIntervalSince1970: timeIntervalSince1970.rounded(.down)) }
+}
+
 /// What the assistant may do with one conversation. Everything defaults to off.
 public struct ChatAccess: Codable, Equatable, Sendable {
     public var read = false          // read & summarize message text
@@ -24,24 +120,70 @@ public struct ChatAccess: Codable, Equatable, Sendable {
     public var filterAllowedMessages: [Int64] = []
     /// Photos (attachment ids) the user chose to share without the photo check. Kept sorted.
     public var filterAllowedPhotos: [Int64] = []
+    /// How far back the assistant can read. All (the default) behaves exactly as before.
+    public var history: HistoryWindow = .all
+    /// When access last went from nothing to something. Bookkeeping kept by `settled(after:now:)`,
+    /// cleared while nothing is shared. "Only after I shared this chat" reads from here.
+    public var sharedSince: Date? { didSet { sharedSince = sharedSince?.wholeSeconds } }
+    /// When sharing ends on its own. nil means Always. At this time every switch goes off.
+    public var expires: Date? { didSet { expires = expires?.wholeSeconds } }
 
     public init(read: Bool = false, waiting: Bool = false, draft: Bool = false,
                 send: Bool = false, attachments: Bool = false, hidden: Bool = false, autoSend: Bool = false,
                 activity: Bool = false, filtered: Bool = false, filterPolicy: FilterPolicy? = nil,
-                filterAllowedMessages: [Int64] = [], filterAllowedPhotos: [Int64] = []) {
+                filterAllowedMessages: [Int64] = [], filterAllowedPhotos: [Int64] = [],
+                history: HistoryWindow = .all, sharedSince: Date? = nil, expires: Date? = nil) {
         self.read = read; self.waiting = waiting; self.draft = draft
         self.send = send; self.attachments = attachments; self.hidden = hidden; self.autoSend = autoSend
         self.activity = activity
         self.filtered = filtered; self.filterPolicy = filterPolicy
         self.filterAllowedMessages = Array(Set(filterAllowedMessages)).sorted()
         self.filterAllowedPhotos = Array(Set(filterAllowedPhotos)).sorted()
+        self.history = history
+        self.sharedSince = sharedSince?.wholeSeconds
+        self.expires = expires?.wholeSeconds
     }
 
-    /// The same chat with every switch off, keeping its content-filter settings, so turning
-    /// things off and on again never silently drops the filter.
+    /// The same chat with every switch off, keeping its content-filter settings and history choice, so
+    /// turning things off and on again never silently drops them. The time limit ends with the sharing.
     public var allOffKeepingFilter: ChatAccess {
         ChatAccess(hidden: hidden, filtered: filtered, filterPolicy: filterPolicy, filterAllowedMessages: filterAllowedMessages,
-                   filterAllowedPhotos: filterAllowedPhotos)
+                   filterAllowedPhotos: filterAllowedPhotos, history: history)
+    }
+
+    /// Any switch that shares something is on (ignores Hide, which keeps the switches underneath).
+    public var hasAnySwitch: Bool { read || waiting || draft || send || attachments || activity }
+
+    /// The time limit has run out.
+    public func expired(at now: Date) -> Bool { expires.map { $0 <= now } ?? false }
+
+    /// The oldest moment the assistant may see in this chat, or nil for all of it. "Only after I shared
+    /// this chat" with no recorded time shows nothing older than now (fail closed).
+    public func historyCutoff(now: Date) -> Date? {
+        switch history {
+        case .all: return nil
+        case .sinceShared: return sharedSince ?? now
+        default: return now.addingTimeInterval(-(history.span ?? 0))
+        }
+    }
+
+    /// This chat after a change from `before`, with the sharing bookkeeping kept consistent. Every change
+    /// to a chat's switches goes through here (the app and the assistant's settings tools alike):
+    /// - a time limit that has run out locks the chat;
+    /// - `sharedSince` is recorded when access goes from nothing to something, and kept while any stays on;
+    /// - with nothing shared, there's no time limit and no `sharedSince`.
+    public func settled(after before: ChatAccess, now: Date) -> ChatAccess {
+        var a = self
+        if a.expired(at: now) { a = a.allOffKeepingFilter }
+        if !a.hasAnySwitch {
+            a.sharedSince = nil; a.expires = nil
+        } else if !before.hasAnySwitch || before.expired(at: now) {
+            a.sharedSince = now
+        } else {
+            // Files from before this existed have no time: "since shared" then starts now.
+            a.sharedSince = before.sharedSince ?? (a.history == .sinceShared ? now : nil)
+        }
+        return a
     }
 
     /// Timing metadata is visible: either the Activity switch, or Read (which shows everything anyway).
@@ -51,6 +193,7 @@ public struct ChatAccess: Codable, Equatable, Sendable {
     // older version re-encodes to the same bytes and still verifies.
     private enum CodingKeys: String, CodingKey {
         case read, waiting, draft, send, attachments, hidden, autoSend, activity, filtered, filterPolicy, filterAllowedMessages, filterAllowedPhotos
+        case history, sharedSince, expires
     }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -63,6 +206,10 @@ public struct ChatAccess: Codable, Equatable, Sendable {
         filterPolicy = try c.decodeIfPresent(FilterPolicy.self, forKey: .filterPolicy)
         filterAllowedMessages = try c.decodeIfPresent([Int64].self, forKey: .filterAllowedMessages) ?? []
         filterAllowedPhotos = try c.decodeIfPresent([Int64].self, forKey: .filterAllowedPhotos) ?? []
+        // An unknown value fails to decode, so the file is treated as unreadable and everything stays off.
+        history = try c.decodeIfPresent(HistoryWindow.self, forKey: .history) ?? .all
+        sharedSince = try c.decodeIfPresent(Int64.self, forKey: .sharedSince).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        expires = try c.decodeIfPresent(Int64.self, forKey: .expires).map { Date(timeIntervalSince1970: TimeInterval($0)) }
     }
     public func encode(to e: Encoder) throws {
         var c = e.container(keyedBy: CodingKeys.self)
@@ -74,6 +221,10 @@ public struct ChatAccess: Codable, Equatable, Sendable {
         try c.encodeIfPresent(filterPolicy, forKey: .filterPolicy)
         if !filterAllowedMessages.isEmpty { try c.encode(filterAllowedMessages, forKey: .filterAllowedMessages) }
         if !filterAllowedPhotos.isEmpty { try c.encode(filterAllowedPhotos, forKey: .filterAllowedPhotos) }
+        // All, no recorded time and Always are left out, so files signed before these existed still verify.
+        if history != .all { try c.encode(history, forKey: .history) }
+        if let d = sharedSince { try c.encode(Int64(d.timeIntervalSince1970), forKey: .sharedSince) }
+        if let d = expires { try c.encode(Int64(d.timeIntervalSince1970), forKey: .expires) }
     }
 
     public static let none = ChatAccess()
@@ -178,13 +329,33 @@ public struct PermissionState: Codable, Equatable, Sendable {
         reviewed = Array(Set(reviewed).union(ids)).sorted()
     }
 
-    /// The single source of truth for policy decisions. Hidden or paused means nothing.
-    public func access(_ chatID: String) -> ChatAccess {
+    /// The single source of truth for policy decisions. Hidden or paused means nothing, and so does a
+    /// share whose time limit has run out, even before the lock has been written to the file.
+    public func access(_ chatID: String, now: Date = Date()) -> ChatAccess {
         var a = chats[chatID] ?? .none
         if a.hidden { return ChatAccess(hidden: true) }
         if paused { return .none }
+        if a.expired(at: now) { return a.allOffKeepingFilter }
         if !a.send || autoSendStopped { a.autoSend = false }
         return a
+    }
+
+    /// The oldest moment the assistant may see in a chat, or nil for all of it.
+    public func historyCutoff(_ chatID: String, now: Date) -> Date? {
+        chats[chatID]?.historyCutoff(now: now)
+    }
+
+    /// Chats whose time limit has run out.
+    public func expiredChats(now: Date) -> [String] {
+        chats.filter { $0.value.expired(at: now) }.map(\.key).sorted()
+    }
+
+    /// Locks every chat whose time limit has run out (every switch off, auto-send included). Returns their ids.
+    @discardableResult
+    public mutating func lockExpired(now: Date) -> [String] {
+        let ids = expiredChats(now: now)
+        for id in ids { if let a = chats[id] { chats[id] = a.settled(after: a, now: now) } }
+        return ids
     }
 }
 
