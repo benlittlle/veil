@@ -115,7 +115,8 @@ struct MenuBarIcon: View {
             p.contentView = h
             panel = p
             // Close the panel automatically once nothing is waiting.
-            panelCloser = model.$sends.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            panelCloser = model.$sends.map { _ in () }.merge(with: model.$settingsRequests.map { _ in () })
+                .receive(on: DispatchQueue.main).sink { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty, self.model.waitingSettings.isEmpty else { return }
                     p.orderOut(nil)
