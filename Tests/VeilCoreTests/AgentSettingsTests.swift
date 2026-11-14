@@ -214,7 +214,7 @@ struct AgentSettingsTests {
         let h = try harness(.direct)
         let limit = Gate.directChangeLimit.count
         for i in 0..<limit {
-            #expect(change(h, ID.therapist, ["read": i % 2 == 0]).json["status"]?.string == "applied")
+            #expect(change(h, ID.therapist, ["read": .bool(i % 2 == 0)]).json["status"]?.string == "applied")
         }
         let over = change(h, ID.therapist, ["waiting": true])
         #expect(over.json["status"]?.string == "pending")
