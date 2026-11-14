@@ -5,6 +5,7 @@ import VeilCore
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var keyDraft = ""
+    @State private var confirmDirect = false
 
     var body: some View {
         ScrollView {
@@ -59,6 +60,8 @@ struct SettingsView: View {
                     }
                 }
 
+                agentSection
+
                 filterSection
 
                 autoSendSection
@@ -68,6 +71,50 @@ struct SettingsView: View {
             .padding(28).frame(maxWidth: 640, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { model.loginItemStatus = SMAppService.mainApp.status }
+    }
+
+    // MARK: Assistant can change settings
+
+    var agentSection: some View {
+        let mode = model.state.agentSettings
+        let name = model.assistantName
+        return VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "\(name)'s access to settings")
+            Card {
+                row("\(name) can change settings", agentDetail(mode)) {
+                    Picker("", selection: Binding(get: { mode }, set: { m in
+                        if m == .direct { confirmDirect = true } else { model.setAgentSettings(m) }
+                    })) {
+                        ForEach(AgentSettingsMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .accessibilityLabel("Assistant can change settings")
+                }
+            }
+            if mode == .direct {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.caution)
+                    Text("\(name) changes settings without asking. A message it reads could trick it into opening up chats or turning on auto-send. Choose Ask me to approve each change.")
+                        .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.caution.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+        .alert("Let \(name) change settings without asking?", isPresented: $confirmDirect) {
+            Button("Apply directly", role: .destructive) { model.setAgentSettings(.direct) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(name) will be able to turn on Read, Send, auto-send and the other switches for any chat it can see, change the content filter and pause Veil, and the change happens right away. A message it reads could trick it into opening up chats or turning on auto-send. You'll get a notification for each change, and allowing PINs and codes still asks you. Hidden chats, the webhook and this setting stay out of reach.")
+        }
+    }
+
+    func agentDetail(_ mode: AgentSettingsMode) -> String {
+        switch mode {
+        case .off: return "Only you can change what \(model.assistantName) sees and does. It can still ask you in conversation."
+        case .ask: return "\(model.assistantName) can ask to change switches, the content filter, auto-send and pings. You allow or decline each change."
+        case .direct: return "\(model.assistantName) changes switches, the content filter, auto-send and pings right away. You're notified of each change."
+        }
     }
 
     // MARK: Content filter
@@ -122,7 +169,7 @@ struct SettingsView: View {
                     }
                 }
                 Divider().padding(.leading, 16)
-                row("Notify me", "Show a notification with the text after each auto-sent message.") {
+                row("Notify me", "Show a notification with the text after each auto-sent message, and after each settings change \(model.assistantName) makes without asking.") {
                     Toggle("", isOn: $model.autoSendNotify)
                         .toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                         .accessibilityLabel("Notify after each auto-send")
