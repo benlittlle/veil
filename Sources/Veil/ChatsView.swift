@@ -61,7 +61,7 @@ struct ChatsView: View {
                         ForEach(shared) { row($0) }
                     }
                     if !new.isEmpty {
-                        newBanner(new).padding(.top, shared.isEmpty ? 0 : 14)
+                        newBanner(new).padding(.top, shared.isEmpty ? 4 : 14)
                         ForEach(collapse ? Array(new.prefix(newPreview)) : new) { row($0, isNew: true) }
                         if collapse {
                             Button("Show all \(new.count) new chats") { showAllNew = true }
@@ -107,20 +107,19 @@ struct ChatsView: View {
         .padding(.horizontal, 2).padding(.bottom, 8)
     }
 
+    /// Same shape as the other section headings, with one short line and the bulk action.
     func newBanner(_ new: [Conversation]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("New chats · \(new.count)").font(.system(size: 12, weight: .semibold))
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel(text: "New · \(new.count)")
                 Spacer()
                 Button("Keep all private") { model.markReviewed(new.map(\.id)) }
                     .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
             }
-            Text("These stay private until you choose. \(model.assistantName) can only see the name and number.")
+            Text("Private until you choose. \(model.assistantName) sees only the name and number.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(10)
-        .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .padding(.horizontal, 2).padding(.bottom, 4)
+        .padding(.horizontal, 10).padding(.bottom, 4)
     }
 
     func row(_ c: Conversation, isNew: Bool = false) -> some View {
@@ -130,23 +129,25 @@ struct ChatsView: View {
             HStack(spacing: 10) {
                 Avatar(name: c.displayName, isGroup: c.isGroup, size: 30)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(c.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    // The countdown sits beside the name, so the summary below keeps its full width.
+                    HStack(spacing: 6) {
+                        Text(c.displayName).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        if !isNew, !a.hidden, a.anyEnabled, let end = a.expires {
+                            TimelineView(.periodic(from: .now, by: 20)) { ctx in
+                                HStack(spacing: 3) {
+                                    Image(systemName: "timer")
+                                    Text(ShareDuration.remainingShort(until: end, now: ctx.date))
+                                }
+                                .font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.accent).fixedSize()
+                            }
+                            .accessibilityLabel("Shared for \(ShareDuration.remaining(until: end, now: Date()))")
+                        }
+                    }
                     Text(isNew ? "New · nothing shared" : summary(a)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Spacer(minLength: 4)
                 if isNew { Circle().fill(Theme.accent).frame(width: 7, height: 7) }
                 else if a.hidden { Image(systemName: "eye.slash").font(.system(size: 11)).foregroundStyle(.tertiary) }
-                else if a.anyEnabled, let end = a.expires {
-                    // Time left on a time-limited share. Counts down while the list is open.
-                    TimelineView(.periodic(from: .now, by: 20)) { ctx in
-                        HStack(spacing: 3) {
-                            Image(systemName: "timer")
-                            Text(ShareDuration.remainingShort(until: end, now: ctx.date))
-                        }
-                        .font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.accent).fixedSize()
-                    }
-                    .accessibilityLabel("Shared for \(ShareDuration.remaining(until: end, now: Date()))")
-                }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(selected ? Theme.card : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -190,10 +191,11 @@ struct ChatDetail: View {
                     Avatar(name: chat.displayName, isGroup: chat.isGroup, size: 48)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(chat.displayName).font(.system(size: 20, weight: .semibold))
-                        Text(chat.subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+                        Text([chat.subtitle, chat.lastActivity.map { $0.relative }].compactMap { $0 }.joined(separator: " · "))
+                            .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    Spacer()
-                    if let d = chat.lastActivity { Text(d.relative).font(.system(size: 11)).foregroundStyle(.tertiary) }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ChatStatusBadge(access: a)
                 }
 
                 if !model.state.reviewed.contains(chat.id) {
@@ -211,25 +213,25 @@ struct ChatDetail: View {
                     SectionLabel(text: "What \(name) can do here")
                     Card {
                         ToggleRow(icon: "text.bubble", title: "Read & summarize",
-                                  detail: a.history == .all ? "Read messages in this chat, including its full history."
-                                                            : "Read messages in this chat, as far back as History below allows.",
+                                  detail: a.history == .all ? "Read messages, including the full history."
+                                                            : "Read messages, as far back as History allows.",
                                   isOn: model.binding(chat.id, \.read), disabled: a.hidden)
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "clock", title: "See activity (no content)",
-                                  detail: a.read ? "Included with Read. Turn Read off to share only when messages come and go."
-                                                 : "When messages come and go, and who sent them. Never what they say.",
+                                  detail: a.read ? "Included with Read."
+                                                 : "When messages come and go, and from whom. Never what they say.",
                                   isOn: model.binding(chat.id, \.activity), disabled: a.hidden)
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "hourglass", title: "Notice who's waiting",
-                                  detail: "Point out when the last message is theirs and you haven't replied.",
+                                  detail: "Spot when they're waiting on a reply from you.",
                                   isOn: model.binding(chat.id, \.waiting), disabled: a.hidden)
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "square.and.pencil", title: "Write drafts",
-                                  detail: "Suggest replies. Drafts wait here for you. Nothing is sent.",
+                                  detail: "Suggest replies. Nothing goes out.",
                                   isOn: model.binding(chat.id, \.draft), disabled: a.hidden)
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "paperplane", title: "Send with your OK",
-                                  detail: "Ask to send a message. You approve each one before it goes.",
+                                  detail: "Ask to send. You approve each message first.",
                                   isOn: model.binding(chat.id, \.send), disabled: a.hidden)
                         if a.send && !a.hidden {
                             Divider().padding(.leading, 60)
@@ -240,7 +242,7 @@ struct ChatDetail: View {
                         }
                         Divider().padding(.leading, 60)
                         ToggleRow(icon: "photo.on.rectangle", title: "See photos & files",
-                                  detail: "Open pictures and attachments shared in this chat.",
+                                  detail: "Open pictures and attachments in this chat.",
                                   isOn: model.binding(chat.id, \.attachments), disabled: a.hidden)
                     }
                     if a.draft && !a.read && !a.hidden {
@@ -287,14 +289,14 @@ struct ChatDetail: View {
     }
 
     var autoSendDetail: String {
-        if model.state.autoSendStopped { return "Stopped for every chat. Turn auto-send back on from the menu bar." }
-        return "Text goes out right away, up to \(model.limitText). Past that, you'll be asked."
+        if model.state.autoSendStopped { return "Stopped for every chat. Turn it back on from the menu bar." }
+        return "Text goes out right away, up to \(model.limitText)."
     }
 
     func footnote(_ a: ChatAccess) -> String {
         if a.hidden { return "This chat is invisible to \(model.assistantName)." }
         if !a.anyEnabled { return "Right now \(model.assistantName) can only see that this chat exists, with its name and number." }
-        return "Changes apply instantly. Turning something off also clears any drafts or unsent requests for it."
+        return "Changes apply instantly. Turning something off clears its drafts and unsent requests."
     }
 }
 
@@ -307,7 +309,7 @@ struct ChatSharingSection: View {
         let a = model.access(chat.id)
         let name = model.assistantName
         VStack(alignment: .leading, spacing: 8) {
-        SectionLabel(text: "How far back, and for how long")
+        SectionLabel(text: "History & time limit")
         Card {
             row(icon: "clock.arrow.circlepath", title: "History \(name) can see", detail: historyDetail(a), active: a.history != .all) {
                 Picker("", selection: Binding(get: { a.history }, set: { model.setHistory($0, for: chat.id) })) {
@@ -329,14 +331,14 @@ struct ChatSharingSection: View {
     func shareRow(_ a: ChatAccess, now: Date) -> some View {
         if !a.hasAnySwitch {
             row(icon: "timer", title: "Share for",
-                detail: "How long sharing lasts once you turn something on. When the time is up, every switch turns off again.",
+                detail: "How long sharing lasts once you turn something on.",
                 active: (model.pendingShareFor[chat.id] ?? .always) != .always) {
                 durationPicker(Binding(get: { model.pendingShareFor[chat.id] ?? .always },
                                        set: { model.pendingShareFor[chat.id] = $0 == .always ? nil : $0 }))
             }
         } else if let end = a.expires {
             row(icon: "timer", title: "Shared for \(ShareDuration.remaining(until: end, now: now))",
-                detail: "Until \(Self.untilText(end, now: now)). Then every switch turns off, and drafts and waiting sends are cleared.",
+                detail: "Ends \(Self.untilText(end, now: now)). Then every switch turns off and drafts and waiting sends are cleared.",
                 active: true) {
                 HStack(spacing: 8) {
                     Menu("Extend") {
@@ -352,7 +354,7 @@ struct ChatSharingSection: View {
             }
         } else {
             row(icon: "timer", title: "Share for",
-                detail: "Until you turn it off. Pick a time to end sharing on its own.", active: false) {
+                detail: "Until you turn it off, or pick a time to stop.", active: false) {
                 durationPicker(Binding(get: { .always }, set: { model.shareFor($0, for: chat.id) }))
             }
         }
@@ -369,9 +371,9 @@ struct ChatSharingSection: View {
     func historyDetail(_ a: ChatAccess) -> String {
         let name = model.assistantName
         switch a.history {
-        case .all: return "Everything in this chat, back to the first message."
+        case .all: return "Everything, back to the first message."
         case .day, .week, .month:
-            return "Only messages from the \(a.history.title.lowercased()). Older ones don't exist as far as \(name) can tell."
+            return "Only the \(a.history.title.lowercased()). Older messages are invisible to \(name)."
         case .sinceShared:
             if let s = a.sharedSince { return "Only messages from \(Self.untilText(s, now: Date())) on, when you shared this chat." }
             return a.hasAnySwitch ? "Only messages from now on." : "Only messages from the moment you share this chat."
@@ -401,8 +403,37 @@ struct ChatSharingSection: View {
                 Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 trailing().padding(.top, 6)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+}
+
+/// The chat's sharing state at a glance, top right of its page: Private, Hidden or Shared,
+/// with the time left on a time-limited share.
+struct ChatStatusBadge: View {
+    let access: ChatAccess
+
+    var body: some View {
+        if access.hidden {
+            badge("Hidden", icon: "eye.slash", color: .secondary)
+        } else if access.anyEnabled, let end = access.expires {
+            TimelineView(.periodic(from: .now, by: 20)) { ctx in
+                badge("Shared · \(ShareDuration.remainingShort(until: end, now: ctx.date))", icon: "timer", color: Theme.accent)
+            }
+        } else if access.anyEnabled {
+            badge("Shared", icon: "eye", color: Theme.accent)
+        } else {
+            badge("Private", icon: "lock", color: .secondary)
+        }
+    }
+
+    func badge(_ text: String, icon: String, color: Color) -> some View {
+        Label(text, systemImage: icon)
+            .font(.system(size: 11, weight: .medium)).labelStyle(.titleAndIcon)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: Capsule())
+            .fixedSize()
     }
 }
