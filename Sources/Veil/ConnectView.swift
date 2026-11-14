@@ -5,6 +5,7 @@ import Contacts
 struct ConnectView: View {
     @EnvironmentObject var model: AppModel
     @State private var copied: String?
+    @State private var showConfig = false
 
     var config: String {
         """
@@ -34,18 +35,21 @@ struct ConnectView: View {
                 BypassNotice()
 
                 step(1, "Turn off \(model.assistantName)'s own Messages access",
-                     "Otherwise it can still read everything without asking Veil. The same goes if the app it runs in has Full Disk Access; Veil tells you when it notices.")
+                     "Otherwise it can read everything without asking Veil. Veil tells you if the app it runs in has Full Disk Access.")
 
                 VStack(alignment: .leading, spacing: 10) {
-                    step(2, "Add Veil as an MCP server", "One click for these. Veil shows you exactly what changes and backs up the file first. It launches a tiny relay that only talks to this app.")
+                    step(2, "Add Veil as an MCP server", "One click for these. Veil shows you exactly what changes and backs up the file first.")
                     ConnectClientsCard().padding(.leading, 34)
                     if !model.bridgeIsInApp {
                         Text("This copy of Veil isn't running from Veil.app, so this path may change when you rebuild.")
                             .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 34)
                     }
-                    Text("Anything else: paste this into its MCP settings.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 34).padding(.top, 4)
-                    code(config, id: "config")
+                    DisclosureGroup(isExpanded: $showConfig) {
+                        code(config, id: "config").padding(.leading, -34).padding(.top, 6)
+                    } label: {
+                        Text("Another app? Paste this into its MCP settings").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 34).padding(.top, 2)
                 }
 
                 step(3, "Try it", "Ask \(model.assistantName): “Who's waiting on a reply from me?” Requests show up under Activity.")
@@ -142,22 +146,16 @@ struct SetupView: View {
                     SectionLabel(text: "How it works")
                     Card(padding: 18) {
                         VStack(alignment: .leading, spacing: 12) {
-                            bullet("lock", "Your settings live only on this Mac and can only be changed here. \(model.assistantName) has no way to change them.")
-                            bullet("line.3.horizontal.decrease", "Filtering happens inside Veil before anything is handed over. Locked chats show just a name and number.")
-                            bullet("hand.raised", "Nothing is ever sent without you clicking Send on that exact message.")
-                            bullet("arrow.uturn.backward", "Turning a chat off takes effect on the very next request and clears drafts and unsent requests for it.")
+                            bullet("lock", "Your settings live only on this Mac. \(model.assistantName) can change them only if you allow it under Settings.")
+                            bullet("line.3.horizontal.decrease", "Filtering happens inside Veil before anything is handed over. Private chats show just a name and number.")
+                            bullet("hand.raised", "Nothing is sent without your OK on that exact message, unless you turn on auto-send for a chat.")
+                            bullet("arrow.uturn.backward", "Turning a chat off applies to the very next request and clears its drafts and unsent requests.")
                             bullet("signature", "Your settings file is signed with a key in your Keychain. If anything else edits it, everything switches off until you look.")
+                            Divider().padding(.vertical, 2)
+                            // What Veil can't do, kept with the rest so it isn't missed.
+                            bullet("exclamationmark.bubble", "Anything \(model.assistantName) has already seen may stay in its own conversation history. Veil can't reach in and delete that.")
+                            bullet("externaldrive", "Any app with Full Disk Access can read Messages directly, outside Veil's limits. Veil checks each assistant when it connects; ones on the local web address can't be checked.")
                         }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionLabel(text: "Good to know")
-                    Card(padding: 18) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Anything \(model.assistantName) has already seen may be kept in its own conversation history. Veil can't reach in and delete that.")
-                            Text("Any app with Full Disk Access can read Messages directly, and Veil's limits don't apply to that. Veil checks each assistant when it connects and tells you here if the app it runs in has Full Disk Access. Assistants on the local web address can't be checked.")
-                        }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 }
             }

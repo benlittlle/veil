@@ -99,7 +99,7 @@ struct ClientChecksList: View {
 
     func status(_ c: ClientCheck, acknowledged: Bool) -> String {
         if acknowledged { return ClientCheck.acknowledgedLine + ". It could read Messages directly." }
-        if c.canBypass { return "Runs with Full Disk Access, so it could read Messages directly. Veil's limits only apply to what it asks Veil for." }
+        if c.canBypass { return "Runs with Full Disk Access, so it could read Messages directly." }
         return c.detail
     }
 
