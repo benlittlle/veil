@@ -794,7 +794,18 @@ final class AppModel: ObservableObject {
         return WebhookConfig(url: url, headerName: webhookHeader, key: key, pingReplies: webhookPingReplies)
     }
 
-    func applyWebhook() { webhook.configure(webhookEnabled ? webhookConfig : nil) }
+    func applyWebhook() {
+        if mode == .demo { webhook.configure(Self.demoWebhook); return }
+        webhook.configure(webhookEnabled ? webhookConfig : nil)
+    }
+
+    /// Demo mode only: pings to a test server named by `VEIL_DEMO_WEBHOOK` (for example a local one),
+    /// with a made-up key. Never the saved settings or the Keychain.
+    private static var demoWebhook: WebhookConfig? {
+        guard let s = ProcessInfo.processInfo.environment["VEIL_DEMO_WEBHOOK"],
+              WebhookConfig.problem(url: s, headerName: "Authorization") == nil, let url = URL(string: s) else { return nil }
+        return WebhookConfig(url: url, headerName: "Authorization", key: "demo")
+    }
 
     func saveWebhookKey(_ key: String) {
         let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
