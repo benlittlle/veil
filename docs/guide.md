@@ -190,6 +190,8 @@ This setting itself can only be changed in the app. It's signed in `permissions.
 
 **Rules that always apply:**
 
+- **Bursts ask too.** In *Apply directly*, more than 10 changes within 10 minutes go to the approval prompt instead.
+- **Changing this setting reaches a connected assistant when it reconnects** (restart it, or start a new session), since MCP clients read the tool list when they connect.
 - **Allowing PINs & verification codes always asks you**, even in *Apply directly*, because the app asks you to confirm it too. That includes turning the filter off in a chat where it masks codes.
 - Auto-send needs *Send* on for that chat. Asking for auto-send without it is refused, and turning *Send* off turns auto-send off, as in the app.
 - Turning a switch off purges drafts and waiting send requests for that chat, exactly as the app does.

@@ -210,6 +210,22 @@ struct AgentSettingsTests {
         #expect(h.gate.permissions.state.generation == gen)
     }
 
+    @Test func directChangesInABurstFallBackToAsking() throws {
+        let h = try harness(.direct)
+        let limit = Gate.directChangeLimit.count
+        for i in 0..<limit {
+            #expect(change(h, ID.therapist, ["read": i % 2 == 0]).json["status"]?.string == "applied")
+        }
+        let over = change(h, ID.therapist, ["waiting": true])
+        #expect(over.json["status"]?.string == "pending")
+        #expect(over.json["note"]?.string?.contains("need the user's approval") == true)
+        #expect(!h.gate.permissions.state.access(ID.therapist).waiting)
+        // App settings share the same limit.
+        #expect(h.call("change_app_settings", ["assistant_name": "Helper"]).json["status"]?.string == "pending")
+        // The window slides: old changes stop counting.
+        #expect(h.gate.takeDirectChangeSlot(now: Date().addingTimeInterval(Gate.directChangeLimit.seconds + 1)))
+    }
+
     @Test func directAppSettings() throws {
         let h = try harness(.direct)
         let out = h.call("change_app_settings", ["assistant_name": "Helper", "new_message_pings": true, "ping_when_i_reply": false,

@@ -9,6 +9,18 @@ extension Gate {
                                              "change_app_settings", "check_settings_request"]
     /// At most this many settings requests wait for the user at once.
     static let maxPendingSettings = 3
+    /// In Apply directly, at most this many changes per window apply on their own; past that they ask,
+    /// so a manipulated assistant can't flip many settings in a burst without the user seeing it.
+    static let directChangeLimit = (count: 10, seconds: 600.0)
+
+    /// Records a direct change if the burst limit allows it.
+    func takeDirectChangeSlot(now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _directChangeTimes.removeAll { now.timeIntervalSince($0) > Self.directChangeLimit.seconds }
+        guard _directChangeTimes.count < Self.directChangeLimit.count else { return false }
+        _directChangeTimes.append(now)
+        return true
+    }
 
     /// The mode the assistant sees: Off whenever the signed settings can't be trusted.
     public var agentSettingsMode: AgentSettingsMode {
@@ -55,7 +67,8 @@ extension Gate {
             let codes = change.allowsCodes(from: before, in: state)
             let caution = codes ? "This lets \(c.displayName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts." : nil
             let target = SettingsRequest.Target.chat(id: c.id, name: c.displayName, change: change)
-            if mode == .direct && !codes {
+            let direct = mode == .direct && !codes && takeDirectChangeSlot()
+            if direct {
                 let r = SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client, caution: nil, status: .approved)
                 do { try applyChat(c.id, change, markReviewed: false) }
                 catch let e as SettingsError { throw invalid(e, c) }
@@ -63,7 +76,8 @@ extension Gate {
                 return applied(r, c)
             }
             return try ask(SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client,
-                                           caution: caution, status: .pending), c, codes: codes && mode == .direct)
+                                           caution: caution, status: .pending), c, codes: codes && mode == .direct,
+                           overLimit: mode == .direct && !codes)
 
         case "change_app_settings":
             let change: AppSettingsChange
@@ -72,12 +86,14 @@ extension Gate {
             guard !lines.isEmpty else { return unchanged(nil) }
             let r = SettingsRequest(id: newSettingsID(), target: .app(change), lines: lines, created: Date(), client: client,
                                     caution: nil, status: mode == .direct ? .approved : .pending)
-            if mode == .direct {
+            let direct = mode == .direct && takeDirectChangeSlot()
+            if direct {
                 do { try applyApp(change) }
                 catch { throw Denied(message: "Veil couldn't save that change. Nothing was changed.", summary: "Couldn't save a settings change: \(error.localizedDescription)") }
                 return applied(r, nil)
             }
-            return try ask(r, nil, codes: false)
+            var pending = r; pending.status = .pending
+            return try ask(pending, nil, codes: false, overLimit: mode == .direct)
 
         case "check_settings_request":
             guard let id = args["request_id"]?.string, let r = settingsRequests.first(where: { $0.id == id }) else {
@@ -108,7 +124,7 @@ extension Gate {
         return (.json(.object(out)), "Changed settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary)", c)
     }
 
-    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool) throws -> (ToolResult, String, Conversation?) {
+    private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
         lock.lock()
         guard _settingsRequests.filter({ $0.status == .pending }).count < Self.maxPendingSettings else {
             lock.unlock()
@@ -120,7 +136,9 @@ extension Gate {
         onOutboxChange?()
         onSettingsRequested?(r)
         let minutes = Int(settingsRequestLifetime / 60)
-        let why = codes ? "Allowing PINs & verification codes always needs the user's approval. " : ""
+        let l = Self.directChangeLimit
+        let why = codes ? "Allowing PINs & verification codes always needs the user's approval. "
+            : overLimit ? "More than \(l.count) changes in \(Int(l.seconds / 60)) minutes need the user's approval. " : ""
         return (.json(["status": "pending", "request_id": .string(r.id), "changes": .array(r.lines.map { .string($0.short) }),
                        "note": .string(why + "The user will see this in Veil and decide. Use check_settings_request to follow up; it expires after \(minutes) minutes.")]),
                 "Asked to change settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary) (waiting for approval)", c)

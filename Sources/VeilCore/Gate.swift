@@ -29,6 +29,8 @@ public final class Gate {
     private var _sends: [SendRequest] = []
     /// Settings changes the assistant asked for (Ask me, or allowing codes). Guarded by `lock`.
     var _settingsRequests: [SettingsRequest] = []
+    /// When recent "Apply directly" changes happened, for the burst limit.
+    var _directChangeTimes: [Date] = []
     /// App preferences outside the signed file (assistant name, pings). The app passes its own.
     public let preferences: AppPreferences
     /// How long a settings request waits for the user before it expires.
