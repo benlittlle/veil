@@ -9,6 +9,9 @@ enum Snapshot {
     static func run(model: AppModel, to dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         model.reloadNow()
+        // The ordinary screens show no bypass warnings; they get their own snapshots below.
+        for c in AppModel.demoClientChecks { model.forgetClientCheck(c.name) }
+        model.clientChecks = model.clientCheckStore.all
         // Simulate an assistant session so the log, drafts and approval prompt have content.
         let g = model.gate
         _ = g.call(tool: "list_chats", arguments: [:], client: "Assistant")
@@ -104,6 +107,21 @@ enum Snapshot {
         }
         render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-locked.png"), model: model)
         (model.integrity, model.signingKeyMissing, model.legacyKeyAvailable) = saved
+        // Bypass warnings: Grok Bot's app has Full Disk Access; Assistant checked out fine; a web client can't be checked.
+        model.clientCheckStore.record(ClientCheck(name: "Assistant", transport: .relay, reach: .blocked))
+        for c in AppModel.demoClientChecks { model.clientCheckStore.record(c) }
+        model.clientCheckStore.record(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        model.clientChecks = model.clientCheckStore.all
+        model.clients = ["Assistant", "Grok Bot"]
+        for dark in [false, true] {
+            let suffix = dark ? "-dark" : ""
+            render(MainView(pane: .setup), size: CGSize(width: 960, height: 1500), dark: dark, to: dir.appendingPathComponent("setup-bypass\(suffix).png"), model: model)
+            render(MainView(pane: .connect), size: CGSize(width: 960, height: 1100), dark: dark, to: dir.appendingPathComponent("connect-bypass\(suffix).png"), model: model)
+            render(MenuBarView(openMain: { _ in }), size: nil, dark: dark, to: dir.appendingPathComponent("menu-bypass\(suffix).png"), model: model)
+        }
+        for c in model.clientCheckStore.all { model.forgetClientCheck(c.name) }
+        model.clientChecks = []
+        model.clients = ["Assistant"]
         renderGlyphs(to: dir.appendingPathComponent("menubar-glyph.png"))
         model.diskAccessProblem = "no access"
         render(MainView(pane: .chats), size: CGSize(width: 960, height: 640), dark: false, to: dir.appendingPathComponent("onboarding.png"), model: model)

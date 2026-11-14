@@ -34,6 +34,14 @@ final class AppModel: ObservableObject {
     /// Settings changes the assistant asked for (Ask me, or allowing codes).
     @Published var settingsRequests: [SettingsRequest] = []
     @Published var clients: [String] = []
+    /// Per assistant: could the app it runs in read chat.db without Veil? (See `ClientCheck`.)
+    let clientCheckStore: ClientCheckStore
+    @Published var clientChecks: [ClientCheck] = []
+    /// Other apps with Full Disk Access, read from TCC.db. nil when it couldn't be read.
+    @Published var fullDiskAccess: [FullDiskAccessGrant]?
+    private let tccDatabases: (system: URL, user: URL?)
+    /// Bundle id → app name for that list (NSWorkspace live, a fixed table in demo mode).
+    private let resolveAppName: @Sendable (String) -> String?
     @Published var contactsStatus: CNAuthorizationStatus = .notDetermined
     @Published var serverError: String?
     /// Messages could be opened but not read (busy, changed by a macOS update, ...).
@@ -256,6 +264,9 @@ final class AppModel: ObservableObject {
                 },
                 log: WebhookLog(url: supportDir.appendingPathComponent("webhook-log.jsonl")))
             webhookKey = KeychainString(service: Self.webhookKeyService)
+            clientCheckStore = ClientCheckStore(url: supportDir.appendingPathComponent("client-checks.json"))
+            tccDatabases = (FullDiskAccessList.systemDatabase, FullDiskAccessList.userDatabase)
+            resolveAppName = { Self.appName(bundleID: $0) }
         case .demo:
             supportDir = fm.temporaryDirectory.appendingPathComponent("Veil-demo")
             // Demo keys live in memory, so start from a clean folder each time (an old demo
@@ -275,7 +286,14 @@ final class AppModel: ObservableObject {
                                       openStore: { try MessagesStore(databasePath: paths.db.path, attachmentsRoot: paths.attachments) },
                                       log: WebhookLog(url: nil))
             webhookKey = nil
+            clientCheckStore = ClientCheckStore(url: nil)
+            let tcc = supportDir.appendingPathComponent("fixture-tcc/TCC.db")
+            try? DemoData.buildTCC(at: tcc, rows: DemoData.demoFullDiskAccess)
+            tccDatabases = (tcc, nil)
+            resolveAppName = { DemoData.demoAppNames[$0] }
             for (id, a) in DemoData.demoAccess { try? gate.setAccess(a, for: id) }
+            // Demo: one assistant whose app has Full Disk Access, one on the web address.
+            for c in Self.demoClientChecks { clientCheckStore.record(c) }
             try? gate.setFiltered(true, for: DemoData.ID.alex)
             try? gate.markReviewed([DemoData.ID.therapist, DemoData.ID.family])
         }
@@ -296,10 +314,15 @@ final class AppModel: ObservableObject {
         webhookLog = webhook.log.all
         webhookKeySaved = !(webhookKey?.read() ?? "").isEmpty
         server.onSessionsChange = { [weak self] in Task { @MainActor in self?.clients = self?.server.connectedClients ?? [] } }
+        let checks = clientCheckStore
+        server.onClientCheck = { checks.record($0) }
+        checks.onChange = { [weak self] in Task { @MainActor in self?.clientChecks = checks.all } }
+        clientChecks = checks.all
 
         applyTheme()
         log = gate.log.all
         refreshIntegrity()
+        if mode == .demo { refreshFullDiskAccess(wait: true) }
         contactsStatus = CNContactStore.authorizationStatus(for: .contacts)
         if SystemContacts.isAuthorized { reloadContacts() }
         // Names change when the user edits Contacts.
@@ -330,6 +353,7 @@ final class AppModel: ObservableObject {
         applyHTTP()
         applyWebhook()
         webhook.start()
+        refreshFullDiskAccess()
         // Pick up new chats while the app is running.
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload(); self?.gate.pruneFinishedSends() }
@@ -576,6 +600,43 @@ final class AppModel: ObservableObject {
                 self.reload()
             }
         }
+    }
+
+    // MARK: Bypass warnings
+
+    static let demoClientChecks = [
+        ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable, lastSeen: Date().addingTimeInterval(-600)),
+        ClientCheck(name: "Web Helper", transport: .http, reach: .cantCheckHTTP, lastSeen: Date().addingTimeInterval(-7200)),
+    ]
+
+    /// Assistants whose app can open chat.db without Veil.
+    var bypassWarnings: [ClientCheck] { clientChecks.filter(\.canBypass) }
+    var likelyHostsWithDiskAccess: [FullDiskAccessGrant] { (fullDiskAccess ?? []).filter(\.isLikelyAssistantHost) }
+    func isConnected(_ c: ClientCheck) -> Bool { clients.contains(c.name) }
+    func forgetClientCheck(_ name: String) { clientCheckStore.forget(name) }
+
+    /// Reads who has Full Disk Access (read-only, off the main thread). Hidden if it can't be read.
+    func refreshFullDiskAccess(wait: Bool = false) {
+        let dbs = tccDatabases, resolve = resolveAppName
+        let read = { () -> [FullDiskAccessGrant]? in
+            FullDiskAccessList.read(system: dbs.system, user: dbs.user, resolveName: resolve,
+                                    excluding: Set([Bundle.main.bundleIdentifier].compactMap { $0 }))
+        }
+        if wait { fullDiskAccess = read(); return }
+        DispatchQueue.global(qos: .utility).async {
+            let list = read()
+            Task { @MainActor in self.fullDiskAccess = list }
+        }
+    }
+
+    nonisolated static func appName(bundleID: String) -> String? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        let name = FileManager.default.displayName(atPath: url.path)
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+    }
+
+    static func openFullDiskAccessSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
     }
 
     // MARK: HTTP

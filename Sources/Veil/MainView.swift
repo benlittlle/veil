@@ -68,7 +68,7 @@ struct MainView: View {
                         Text(p.rawValue)
                         Spacer()
                         if p == .chats, !model.newChats.isEmpty { Pill(text: "\(model.newChats.count) new", color: Theme.accent) }
-                        if p == .setup, model.diskAccessProblem != nil || isTampered { Circle().fill(Theme.caution).frame(width: 7, height: 7) }
+                        if p == .setup, model.diskAccessProblem != nil || isTampered || !model.bypassWarnings.isEmpty { Circle().fill(Theme.caution).frame(width: 7, height: 7) }
                     }
                     .font(.system(size: 13, weight: pane == p ? .medium : .regular))
                     .padding(.horizontal, 10).padding(.vertical, 7)

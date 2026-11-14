@@ -12,6 +12,7 @@ struct MenuBarView: View {
             if let r = model.waitingSettings.last {
                 SettingsApprovalCard(request: r, compact: true)
             }
+            BypassMenuRow { openMain(.setup) }
 
             if let r = model.waitingSends.first {
                 ApprovalCard(request: r, compact: true)

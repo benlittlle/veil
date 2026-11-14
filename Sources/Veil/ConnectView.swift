@@ -31,6 +31,8 @@ struct ConnectView: View {
                     if let e = model.serverError { Text(e).font(.system(size: 12)).foregroundStyle(Theme.caution) }
                 }
 
+                BypassWarningCard()
+
                 step(1, "Turn off \(model.assistantName)'s own Messages access",
                      "Otherwise it can still read everything without asking Veil. Also make sure \(model.assistantName) doesn't have Full Disk Access.")
 
@@ -102,6 +104,8 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 24) {
                 PaneHeader(title: "Setup & safety", subtitle: "What Veil needs, and how it keeps private chats private.")
 
+                BypassWarningCard()
+
                 Card {
                     check(model.diskAccessProblem == nil, "Full Disk Access",
                           model.diskAccessProblem == nil ? "Veil can read your Messages history." : "Needed to read Messages. Open Chats to set it up.",
@@ -115,6 +119,15 @@ struct SetupView: View {
                     Divider().padding(.leading, 46)
                     integrityRow
                 }
+
+                if !model.clientChecks.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionLabel(text: "Assistants that connected")
+                        ClientChecksList()
+                    }
+                }
+
+                FullDiskAccessSection()
 
                 VStack(alignment: .leading, spacing: 10) {
                     SectionLabel(text: "How it works")
@@ -134,13 +147,14 @@ struct SetupView: View {
                     Card(padding: 18) {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Anything \(model.assistantName) has already seen may be kept in its own conversation history. Veil can't reach in and delete that.")
-                            Text("Any app with Full Disk Access can read Messages directly. Keep that list short, and leave \(model.assistantName) off it.")
+                            Text("Any app with Full Disk Access can read Messages directly. Keep that list short, and leave \(model.assistantName) off it. Veil checks each assistant when it connects and warns you here if it could skip the gate; assistants on the local web address can't be checked.")
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 }
             }
             .padding(28).frame(maxWidth: 640, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { if model.mode == .live { model.refreshFullDiskAccess() } }
     }
 
     typealias Action = (String, () -> Void)
