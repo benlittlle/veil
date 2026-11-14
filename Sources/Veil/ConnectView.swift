@@ -37,7 +37,14 @@ struct ConnectView: View {
                      "Otherwise it can still read everything without asking Veil. The same goes if the app it runs in has Full Disk Access; Veil tells you when it notices.")
 
                 VStack(alignment: .leading, spacing: 10) {
-                    step(2, "Add Veil as an MCP server", "Paste this into \(model.assistantName)'s MCP settings. It launches a tiny relay that only talks to this app.")
+                    step(2, "Add Veil as an MCP server", "One click for these. Veil shows you exactly what changes and backs up the file first. It launches a tiny relay that only talks to this app.")
+                    ConnectClientsCard().padding(.leading, 34)
+                    if !model.bridgeIsInApp {
+                        Text("This copy of Veil isn't running from Veil.app, so this path may change when you rebuild.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 34)
+                    }
+                    Text("Anything else: paste this into its MCP settings.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 34).padding(.top, 4)
                     code(config, id: "config")
                 }
 
@@ -67,6 +74,8 @@ struct ConnectView: View {
             }
             .padding(28).frame(maxWidth: 640, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { if model.mode == .live { model.refreshConnect() } }
+        .sheet(item: $model.pendingChange) { change in ConnectConfirmView(change: change) }
     }
 
     func step(_ n: Int, _ title: String, _ detail: String) -> some View {

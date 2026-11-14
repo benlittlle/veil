@@ -32,7 +32,7 @@ enum Snapshot {
             render(MainView(pane: .chats, selectedChat: DemoData.ID.mom), size: CGSize(width: 960, height: 640), dark: dark, to: dir.appendingPathComponent("chats\(suffix).png"), model: model)
             render(MainView(pane: .chats, selectedChat: DemoData.ID.unknown), size: CGSize(width: 960, height: 640), dark: dark, to: dir.appendingPathComponent("chats-new\(suffix).png"), model: model)
             render(MainView(pane: .activity), size: CGSize(width: 960, height: 640), dark: dark, to: dir.appendingPathComponent("activity\(suffix).png"), model: model)
-            render(MainView(pane: .connect), size: CGSize(width: 960, height: 640), dark: dark, to: dir.appendingPathComponent("connect\(suffix).png"), model: model)
+            render(MainView(pane: .connect), size: CGSize(width: 960, height: 1000), dark: dark, to: dir.appendingPathComponent("connect\(suffix).png"), model: model)
             render(MainView(pane: .setup), size: CGSize(width: 960, height: 760), dark: dark, to: dir.appendingPathComponent("setup\(suffix).png"), model: model)
             render(MenuBarView(openMain: { _ in }), size: nil, dark: dark, to: dir.appendingPathComponent("menu\(suffix).png"), model: model)
             render(ApprovalPanelView().background(Theme.card), size: nil, dark: dark, to: dir.appendingPathComponent("approval\(suffix).png"), model: model)
@@ -129,6 +129,21 @@ enum Snapshot {
         for c in model.clientCheckStore.all { model.forgetClientCheck(c.name) }
         model.clientChecks = []
         model.clients = ["Assistant"]
+        // One-click connect, on the demo's fake home folder: the review sheet, then the result.
+        model.propose(.add, for: .claudeDesktop)
+        if let change = model.pendingChange {
+            for dark in [false, true] {
+                render(ConnectConfirmView(change: change, showWholeFile: true), size: nil, dark: dark,
+                       to: dir.appendingPathComponent("connect-confirm\(dark ? "-dark" : "").png"), model: model)
+            }
+            model.confirm(change)
+        }
+        model.propose(.fix, for: .cursor)
+        if let change = model.pendingChange {
+            render(ConnectConfirmView(change: change), size: nil, dark: false, to: dir.appendingPathComponent("connect-confirm-fix.png"), model: model)
+            model.pendingChange = nil
+        }
+        render(MainView(pane: .connect), size: CGSize(width: 960, height: 1000), dark: false, to: dir.appendingPathComponent("connect-added.png"), model: model)
         renderGlyphs(to: dir.appendingPathComponent("menubar-glyph.png"))
         model.diskAccessProblem = "no access"
         render(MainView(pane: .chats), size: CGSize(width: 960, height: 640), dark: false, to: dir.appendingPathComponent("onboarding.png"), model: model)

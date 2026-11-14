@@ -43,6 +43,15 @@ final class AppModel: ObservableObject {
     /// Other apps with Full Disk Access, read from TCC.db. nil when it couldn't be read.
     @Published var fullDiskAccess: [FullDiskAccessGrant]?
     private let tccDatabases: (system: URL, user: URL?)
+
+    // One-click connect. Paths come from `connectHome`, so demo mode works on fake files.
+    let connectTargets: [ConnectClientID: MCPConfigTarget]
+    let claudeCode: ClaudeCodeConnector
+    @Published var connectStatus: [ConnectClientID: ConnectStatus] = [:]
+    @Published var claudeCodeCLI: (cli: URL, path: String?)?
+    @Published var connectMessage: [ConnectClientID: String] = [:]
+    @Published var connectError: [ConnectClientID: String] = [:]
+    @Published var pendingChange: PendingConnectChange?
     /// Bundle id → app name for that list (NSWorkspace live, a fixed table in demo mode).
     private let resolveAppName: @Sendable (String) -> String?
     @Published var contactsStatus: CNAuthorizationStatus = .notDetermined
@@ -269,10 +278,15 @@ final class AppModel: ObservableObject {
             webhookKey = KeychainString(service: Self.webhookKeyService)
             clientCheckStore = ClientCheckStore(url: supportDir.appendingPathComponent("client-checks.json"))
             acknowledgements = BypassAcknowledgements()
+            let apps = [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications")]
+            connectTargets = [.claudeDesktop: .claudeDesktop(home: home, applications: apps), .cursor: .cursor(home: home, applications: apps)]
+            claudeCode = ClaudeCodeConnector(home: home, shellLookup: { ProcessRunner.loginShellLookup("claude") },
+                                             run: { ProcessRunner.run($0, $1, env: $2) })
             tccDatabases = (FullDiskAccessList.systemDatabase, FullDiskAccessList.userDatabase)
             resolveAppName = { Self.appName(bundleID: $0) }
         case .demo:
-            supportDir = fm.temporaryDirectory.appendingPathComponent("Veil-demo")
+            // Per process, so two demo or snapshot runs at once can't delete each other's files.
+            supportDir = fm.temporaryDirectory.appendingPathComponent("Veil-demo-\(getpid())")
             // Demo keys live in memory, so start from a clean folder each time (an old demo
             // permissions file without its key would correctly show as locked).
             try? fm.removeItem(at: supportDir)
@@ -294,6 +308,13 @@ final class AppModel: ObservableObject {
             let demoDefaults = UserDefaults(suiteName: "io.github.benlittlle.veil.demo-acknowledgements")!
             demoDefaults.removePersistentDomain(forName: "io.github.benlittlle.veil.demo-acknowledgements")
             acknowledgements = BypassAcknowledgements(defaults: demoDefaults)
+            // Demo: a fake home folder. Never the real configs, never the real `claude` CLI.
+            let demoHome = supportDir.appendingPathComponent("demo-home")
+            Self.buildDemoConnectHome(demoHome)
+            let apps = [demoHome.appendingPathComponent("Applications")]
+            connectTargets = [.claudeDesktop: .claudeDesktop(home: demoHome, applications: apps), .cursor: .cursor(home: demoHome, applications: apps)]
+            claudeCode = ClaudeCodeConnector(home: demoHome, candidates: [], shellLookup: { (nil, nil) },
+                                             run: { _, _, _ in (1, "Not available in demo mode") })
             let tcc = supportDir.appendingPathComponent("fixture-tcc/TCC.db")
             try? DemoData.buildTCC(at: tcc, rows: DemoData.demoFullDiskAccess)
             tccDatabases = (tcc, nil)
@@ -331,6 +352,7 @@ final class AppModel: ObservableObject {
         log = gate.log.all
         refreshIntegrity()
         if mode == .demo { refreshFullDiskAccess(wait: true) }
+        refreshConnect(wait: true)
         contactsStatus = CNContactStore.authorizationStatus(for: .contacts)
         if SystemContacts.isAuthorized { reloadContacts() }
         // Names change when the user edits Contacts.
@@ -654,6 +676,91 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!)
     }
 
+    // MARK: One-click connect
+
+    /// Demo files: Claude Desktop with another server, Cursor pointing at a copy that's gone.
+    static func buildDemoConnectHome(_ home: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: home.appendingPathComponent("Applications/Claude.app"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: home.appendingPathComponent("Applications/Cursor.app"), withIntermediateDirectories: true)
+        let claude = home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
+        let cursor = home.appendingPathComponent(".cursor/mcp.json")
+        for (url, text) in [
+            (claude, #"{"mcpServers": {"files": {"command": "npx", "args": ["-y", "@example/files-server", "~/Documents"]}}}"#),
+            (cursor, #"{"mcpServers": {"veil": {"command": "/Users/demo/Downloads/Veil.app/Contents/MacOS/veil-mcp"}}}"#),
+        ] {
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? Data(text.utf8).write(to: url)
+        }
+    }
+
+    /// The relay isn't inside an installed Veil.app (e.g. `swift run`), so the path may change on rebuild.
+    var bridgeIsInApp: Bool { bridgePath.hasSuffix(".app/Contents/MacOS/veil-mcp") }
+
+    func status(_ id: ConnectClientID) -> ConnectStatus { connectStatus[id] ?? .notInstalled }
+
+    /// Re-reads every client's status. The login-shell lookup for `claude` runs off the main thread.
+    func refreshConnect(wait: Bool = false) {
+        let command = bridgePath
+        var s: [ConnectClientID: ConnectStatus] = [:]
+        for (id, t) in connectTargets { s[id] = t.status(command: command) }
+        let cc = claudeCode
+        let lookup = { () -> ((cli: URL, path: String?)?, ConnectStatus) in
+            let found = cc.findCLI()
+            return (found, cc.status(command: command, cliFound: found != nil))
+        }
+        if wait {
+            let (found, st) = lookup()
+            s[.claudeCode] = st; claudeCodeCLI = found; connectStatus = s
+            return
+        }
+        s[.claudeCode] = connectStatus[.claudeCode]
+        connectStatus = s
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (found, st) = lookup()
+            Task { @MainActor in self.claudeCodeCLI = found; self.connectStatus[.claudeCode] = st }
+        }
+    }
+
+    /// Works out the change and asks for confirmation (the sheet on Connect). Nothing is written yet.
+    func propose(_ action: ConfigPlan.Action, for id: ConnectClientID) {
+        connectError[id] = nil; connectMessage[id] = nil
+        if id == .claudeCode {
+            pendingChange = PendingConnectChange(client: id, action: action, plan: nil,
+                                                 commands: ClaudeCodeConnector.commands(action, command: bridgePath).map { ClaudeCodeConnector.commandLine($0) })
+            return
+        }
+        guard let target = connectTargets[id] else { return }
+        do { pendingChange = PendingConnectChange(client: id, action: action, plan: try target.plan(action, command: bridgePath), commands: []) }
+        catch { connectError[id] = error.localizedDescription }
+    }
+
+    /// The user confirmed: back up and write (or run the Claude Code CLI), then re-check.
+    func confirm(_ change: PendingConnectChange) {
+        pendingChange = nil
+        let id = change.client
+        let done = { (error: Error?, backup: URL?) in
+            if let error { self.connectError[id] = error.localizedDescription }
+            else {
+                let hint = id == .claudeCode ? self.claudeCode.restartHint : self.connectTargets[id]?.restartHint ?? ""
+                let what = change.action == .remove ? "Removed." : change.action == .fix ? "Fixed." : "Added."
+                self.connectMessage[id] = [what, hint, backup.map { "Backup: \($0.lastPathComponent)" }].compactMap { $0 }.joined(separator: " ")
+            }
+            self.refreshConnect()
+        }
+        if let plan = change.plan {
+            do { done(nil, try MCPConfigEditor.apply(plan)) } catch { done(error, nil) }
+            return
+        }
+        guard let found = claudeCodeCLI else { connectError[id] = "Claude Code's command-line tool wasn't found."; return }
+        let cc = claudeCode, command = bridgePath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Error?
+            do { try cc.perform(change.action, command: command, cli: found.cli, loginPath: found.path); result = nil } catch { result = error }
+            Task { @MainActor in done(result, nil) }
+        }
+    }
+
     // MARK: HTTP
 
     func applyHTTP() {
@@ -731,6 +838,29 @@ final class DefaultsPreferences: AppPreferences, @unchecked Sendable {
         if let pingWhenIReply { d.set(pingWhenIReply, forKey: "webhookPingReplies") }
         onChange?()
     }
+}
+
+enum ConnectClientID: String, CaseIterable, Identifiable {
+    case claudeDesktop, cursor, claudeCode
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .claudeDesktop: return "Claude Desktop"
+        case .cursor: return "Cursor"
+        case .claudeCode: return "Claude Code"
+        }
+    }
+}
+
+/// A change waiting for the user's OK on the Connect screen.
+struct PendingConnectChange: Identifiable {
+    let id = UUID()
+    let client: ConnectClientID
+    let action: ConfigPlan.Action
+    /// For config files: exactly what will be written.
+    let plan: ConfigPlan?
+    /// For Claude Code: the commands Veil will run.
+    let commands: [String]
 }
 
 extension Conversation {
