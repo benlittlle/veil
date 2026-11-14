@@ -28,7 +28,7 @@ Under the switches, two more settings decide how far back the assistant can read
 
 - **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`) and **Cursor** (`~/.cursor/mcp.json`): Veil adds `mcpServers.veil` with this app's own `Contents/MacOS/veil-mcp` as the command. Before anything is written you see the file, the `veil` entry before and after, the other servers it keeps, and (if you want) the whole new file. Veil saves a timestamped backup next to the file first (`….veil-backup-YYYYMMDD-HHMMSS`), leaves every other key and server as it was, and writes through a symlink to the real file. The file is saved with standard JSON formatting, so spacing and key order may change. If the file isn't valid JSON, or changed after you reviewed it, Veil writes nothing and says so. Restart the client afterwards.
 - **Claude Code**: if the `claude` command is found (common install paths, then your login shell), Veil shows and then runs `claude mcp add --scope user veil -- <path to veil-mcp>` (*Fix* runs `claude mcp remove --scope user veil` first). Otherwise it shows the command to copy into a terminal. Status is read from `~/.claude.json`; Veil never edits that file itself. Start a new Claude Code session afterwards.
-- **Anything else**: copy the config shown below the buttons.
+- **Anything else**: open *Another app? Paste this into its MCP settings* below the buttons and copy the config.
 
 ## When an assistant has Full Disk Access
 
@@ -53,12 +53,12 @@ Assistants on the local web address can't be checked this way; Veil says "can't 
 
 ## Using the app
 
-- **Chats**: searchable list grouped into *New chats*, *Shared with …* (your assistant's name) and *Private*. Pick a chat to flip its switches. Changes apply on the next request.
+- **Chats**: searchable list grouped into *Shared with …* (your assistant's name), *New* and *Private*. Pick a chat to flip its switches. Changes apply on the next request. The top right of each chat's page shows where it stands: *Shared* (with the time left, if it has a time limit), *Private* or *Hidden*.
 - **New chats** stay locked until you choose; *Keep all private* clears the badge without sharing anything.
 - **Send prompts** float in the top-right corner (and show in the menu bar). *Send* goes through Messages; *Don't send* tells the assistant you declined.
 - **Drafts** appear in the menu bar with *Copy* and *Discard*.
 - **Pause everything** (menu bar or sidebar) blocks every tool immediately and cancels waiting sends.
-- **Activity** shows every request: time, assistant, action, chat, and a short summary of what was returned (never message text). Filter to *Blocked* to see refusals.
+- **Activity** shows every request: time, action, chat, and a short summary of what was returned (never message text). Once more than one assistant has connected, each row also names the assistant. Filter to *Blocked* to see refusals.
 
 ## Activity only (see when, not what)
 
@@ -81,7 +81,7 @@ The activity queries are separate from the message queries and never select text
 
 ## History and time limits (per chat)
 
-Two settings on each chat's page, under *How far back, and for how long*:
+Two settings on each chat's page, under *History & time limit*:
 
 <p align="center">
   <img src="screenshots/chats-time-limit.png" width="640" alt="A chat that shares the last 7 days, shared for 45 more minutes, with Extend and End now">
@@ -135,11 +135,11 @@ For chats you want the assistant to read, minus the sensitive bits. Everything i
   - **Withhold**: nothing is shared (`list_attachments` is refused, `get_attachment` says it isn't available, `read_chat` only counts them).
 
   Either way, a photo is shared only if *See photos & files* is on and **every** chat it appears in allows it, and an attachment on a withheld message stays hidden.
-- **Defaults:** pattern categories Mask, Apple Intelligence topics Withhold at Balanced, photos Check with every photo category Withhold. Change the default under *Settings → Content filter*, or give one chat its own settings with *Customize*. Settings you saved before Check existed keep their value (a saved default profile or a chat's own settings that said Withhold still say Withhold); only chats on the untouched standard settings move to Check.
+- **Defaults:** pattern categories Mask, Apple Intelligence topics Withhold at Balanced, photos Check with every photo category Withhold. Change the default under *Settings → Content filter*, or give one chat its own settings with *Customize*. In Settings the categories start folded into one summary line (*Show* opens them); the warnings for allowed codes and unchecked photos stay visible either way. Settings you saved before Check existed keep their value (a saved default profile or a chat's own settings that said Withhold still say Withhold); only chats on the untouched standard settings move to Check.
 - **Allowing PINs & verification codes** asks you to confirm and shows a warning while it's on: an assistant that can read one-time codes can sign in to your accounts.
 - **Everything is filtered**: message text, reply quotes, attachment names, `waiting_on_reply`'s `last_message`, `read_chat`, `search_messages`, `list_attachments` and `get_attachment`. Subject lines and link-preview titles aren't returned by any tool (link text is part of the message text and is filtered with it). `chat_activity` returns no content, so it's unchanged.
 - **Search** matches only the filtered text, so searching for a masked number or a withheld message finds nothing.
-- **Review (only you):** under the chat's switches, *Filtered recently* lists what was changed, why, and what the assistant sees, with **Allow this message** and **Always allow … here**. Photos held back appear there too, with a small thumbnail, the reason, and **Allow this photo**. These are saved in the signed settings like every other switch.
+- **Review (only you):** under the chat's switches, *Filtered recently* lists what was changed (the latest three, with *Show all*), why, and what the assistant sees, with **Allow this message** and **Always allow … here**. Photos held back appear there too, with a small thumbnail, the reason, and **Allow this photo**. These are saved in the signed settings like every other switch.
 - **Activity** logs counts only, for example "Returned 40 messages, 3 masked, 2 withheld". Never the text or the reasons.
 - Drafts, sending, auto-send and pings are unchanged. Pings were already content-free.
 
@@ -202,7 +202,7 @@ When a new incoming message lands in a chat that has **Read** or **See activity*
 That's all: no message text, no names, no attachments. `received_at` is the message's time. The assistant then
 looks through the normal MCP tools (`read_chat` or `chat_activity`), which apply your switches as usual.
 
-**Turn it on:** *Settings → New-message pings*.
+**Turn it on:** *Settings → New-message pings*. Until a webhook is filled in, its fields are folded behind **Set Up…**.
 
 1. Paste the **webhook address**. It must use `https://`; plain `http://` works only for `localhost`/`127.0.0.1`.
 2. Leave **Header** as `Authorization` to send `Authorization: Bearer <key>`, or enter another header name (for example `X-Routine-Key`) to send the key on its own.
@@ -235,7 +235,7 @@ By default only you change Veil's settings. If you'd rather say "share my climbi
 
 - **Off** (the default): the assistant has no settings tools at all. They aren't listed, and calling one gets the same answer as a tool that doesn't exist.
 - **Ask me**: the assistant can ask for a change. A prompt appears in the top-right corner and in the menu bar, for example "Assistant wants to change settings: Turn on Read for Mom; Turn on Auto-send for Mom (5 per 10 min)", with **Allow** and **Don't allow**.
-- **Apply directly**: changes happen right away. Veil asks you to confirm when you pick this, and shows a macOS notification for each change (under the same *Settings → Auto-send → Notify me* switch as auto-send).
+- **Apply directly**: changes happen right away. Veil asks you to confirm when you pick this, and shows a macOS notification for each change (under the same *Settings → Auto-send → Notify me* switch as auto-send). While it's on, the menu bar panel shows a quiet line saying so.
 
 This setting itself can only be changed in the app. It's signed in `permissions.json` with everything else; a hand-edited file locks everything as usual.
 
@@ -259,7 +259,7 @@ This setting itself can only be changed in the app. It's signed in `permissions.
 - Auto-send needs *Send* on for that chat. Asking for auto-send without it is refused, and turning *Send* off turns auto-send off, as in the app.
 - Turning a switch off purges drafts and waiting send requests for that chat, exactly as the app does.
 - The assistant can pause Veil, but once paused it can't do anything, including unpause. Only you can.
-- Changes the assistant makes don't count as you having looked at a chat, so a new chat it opened up stays under *New chats* until you do. Approving a request does count.
+- Changes the assistant makes don't count as you having looked at a chat, so a new chat it opened up stays under *New* until you do. Approving a request does count.
 - Unknown settings and wrong values are refused with a message, and nothing changes.
 
 **Prompts work like send prompts:** they never take keyboard focus, **Allow** only becomes clickable after a moment, each request can be allowed only once, at most 3 can wait at a time, and a request nobody answers expires after 10 minutes. When you click **Allow**, Veil checks again that settings changes are still on, Veil isn't paused or locked, and the chat still exists and isn't hidden, then applies the whole request in one go. The prompt names the assistant with the name you set; the name the assistant gives itself is only shown as "Asked by …", cleaned up.
@@ -288,7 +288,7 @@ The change tools return `status: "applied"` in *Apply directly*, `status: "pendi
 - **macOS updates** occasionally change the Messages database. If that happens, Veil fails closed: the assistant gets nothing, and the Chats screen says it couldn't read Messages. Your settings aren't touched.
 - **Your Keychain:** if it's locked or reset (or the signing key is missing while the settings file exists), Veil can't verify your settings, so it treats every chat as off and asks you to start fresh.
 - **Nothing piles up:** the access log rotates at about 4 MB, drafts are capped (10 per chat, 50 total), and finished send requests are forgotten after an hour. Drafts and waiting sends are held only in memory, so they're gone after a restart.
-- **New chats** show up within a minute, locked, under *New chats*.
+- **New chats** show up within a minute, locked, under *New*.
 
 ## Upgrading from MessagesGate
 
