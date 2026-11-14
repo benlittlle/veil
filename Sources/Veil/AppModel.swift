@@ -400,7 +400,7 @@ final class AppModel: ObservableObject {
         refreshFullDiskAccess()
         // Content filter: judge new messages in filtered chats ahead of time, on this Mac.
         refreshFilterStatus()
-        gate.photos.prewarm()
+        prewarmPhotoChecks()
         warmFilter()
         // A slow fallback in case a file event is missed, and for the model becoming available.
         // Each step does nothing when nothing changed.
@@ -580,7 +580,17 @@ final class AppModel: ObservableObject {
 
     private func filterChanged(_ id: String?) {
         if let id { loadFilterReview(id) } else { for id in filterReview.keys { loadFilterReview(id) } }
+        prewarmPhotoChecks()
         warmFilter()
+    }
+
+    /// Loads text recognition ahead of the first photo, but only once some chat checks photos,
+    /// so Macs that don't use photo checks never load it.
+    private func prewarmPhotoChecks() {
+        let s = gate.permissions.state
+        if s.chats.contains(where: { id, a in a.attachments && !a.hidden && s.filterPolicy(for: id)?.attachments == .check }) {
+            gate.photos.prewarm()
+        }
     }
 
     /// Judges recent messages in filtered chats in the background, so the assistant's requests stay fast.

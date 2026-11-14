@@ -143,6 +143,7 @@ public final class PhotoChecker: @unchecked Sendable {
     private var jobs: [String: Job] = [:]
     private var queued: [Job] = []
     private var running = 0
+    private var prewarmed = false
 
     init(classifier: ImageClassifier?, recognizer: TextRecognizer?, nudity: NudityDetector?, textFilter: ContentFilter) {
         self.classifier = classifier; self.recognizer = recognizer; self.nudity = nudity; self.textFilter = textFilter
@@ -177,6 +178,9 @@ public final class PhotoChecker: @unchecked Sendable {
     /// doing it at launch means the first real photo doesn't wait for it.
     public func prewarm() {
         guard let recognizer else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard !prewarmed else { return }
+        prewarmed = true
         DispatchQueue.global(qos: .utility).async {
             let ctx = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
