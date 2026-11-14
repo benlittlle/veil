@@ -7,7 +7,7 @@ import Testing
 @Suite("Bypass check per assistant")
 struct ClientCheckTests {
     static let initialize: JSON = ["jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                   "params": ["clientInfo": ["name": "Grok Bot"], "protocolVersion": "2025-06-18"]]
+                                   "params": ["clientInfo": ["name": "Goose"], "protocolVersion": "2025-06-18"]]
 
     static func hello(_ readable: Bool) -> JSON { JSON.parse(Data(RelayHello.line(chatDBReadable: readable).utf8))! }
 
@@ -19,9 +19,9 @@ struct ClientCheckTests {
         #expect(s.handle(Self.hello(true)) == nil)            // a notification: no reply, nothing sent back
         #expect(s.handle(Self.initialize)?["result"] != nil)
         #expect(reported.map(\.reach) == [.readable])
-        #expect(reported.first?.name == "Grok Bot")
+        #expect(reported.first?.name == "Goose")
         #expect(h.server.connectedChecks.map(\.reach) == [.readable])
-        #expect(reported.first?.headline == "Grok Bot runs with Full Disk Access")
+        #expect(reported.first?.headline == "Goose runs with Full Disk Access")
         s.close()
         #expect(h.server.connectedChecks.isEmpty)
     }
@@ -39,7 +39,7 @@ struct ClientCheckTests {
         let s = h.server.makeSession(transport: .relay)
         _ = s.handle(Self.initialize)
         #expect(h.server.connectedChecks.first?.reach == .cantCheckOldRelay)
-        #expect(h.server.connectedChecks.first?.headline == "Can't check Grok Bot")
+        #expect(h.server.connectedChecks.first?.headline == "Can't check Goose")
     }
 
     /// The assistant's own lines pass through the relay, so a hello that isn't the first line is ignored:
@@ -74,7 +74,7 @@ struct ClientCheckTests {
         _ = post(Self.initialize)
         #expect(reported.map(\.reach) == [.cantCheckHTTP])
         #expect(reported.first?.transport == .http)
-        #expect(reported.first?.headline == "Can't check Grok Bot")
+        #expect(reported.first?.headline == "Can't check Goose")
         #expect(reported.first?.canBypass == false)
     }
 
@@ -179,8 +179,8 @@ struct BypassNoticeTests {
     }
 
     @Test func wordingIsNeutral() {
-        let c = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
-        #expect(c.headline == "Grok Bot runs with Full Disk Access")
+        let c = ClientCheck(name: "Goose", transport: .relay, reach: .readable)
+        #expect(c.headline == "Goose runs with Full Disk Access")
         #expect(c.detail == "So it could read Messages directly. Veil's limits only apply to what it asks Veil for.")
         #expect(ClientCheck.acknowledgedLine == "Has Full Disk Access (acknowledged)")
         for r in [ChatDBReach.readable, .blocked, .cantCheckHTTP, .cantCheckOldRelay] {
@@ -192,26 +192,26 @@ struct BypassNoticeTests {
 
     @Test func acknowledgingQuietsOnlyThatAssistant() {
         let (acks, d, suite) = fresh(); defer { d.removePersistentDomain(forName: suite) }
-        let grok = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
+        let helper = ClientCheck(name: "Goose", transport: .relay, reach: .readable)
         let other = ClientCheck(name: "Other", transport: .relay, reach: .readable)
-        #expect(acks.needsNotice(grok) && acks.needsNotice(other))
-        acks.acknowledge("Grok Bot")
-        #expect(!acks.needsNotice(grok))
+        #expect(acks.needsNotice(helper) && acks.needsNotice(other))
+        acks.acknowledge("Goose")
+        #expect(!acks.needsNotice(helper))
         #expect(acks.needsNotice(other))
         // Kept across launches (same defaults).
-        #expect(BypassAcknowledgements(defaults: d).isAcknowledged("Grok Bot"))
+        #expect(BypassAcknowledgements(defaults: d).isAcknowledged("Goose"))
     }
 
     @Test func acknowledgementResetsWhenTheCheckGoesFromFalseToTrue() {
         let (acks, d, suite) = fresh(); defer { d.removePersistentDomain(forName: suite) }
-        acks.acknowledge("Grok Bot")
+        acks.acknowledge("Goose")
         // Can't-check results don't touch it.
-        acks.update(for: ClientCheck(name: "Grok Bot", transport: .http, reach: .cantCheckHTTP))
-        acks.update(for: ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
-        #expect(acks.isAcknowledged("Grok Bot"))
+        acks.update(for: ClientCheck(name: "Goose", transport: .http, reach: .cantCheckHTTP))
+        acks.update(for: ClientCheck(name: "Goose", transport: .relay, reach: .readable))
+        #expect(acks.isAcknowledged("Goose"))
         // Without Full Disk Access once, then with it again: the notice comes back.
-        acks.update(for: ClientCheck(name: "Grok Bot", transport: .relay, reach: .blocked))
-        let again = ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable)
+        acks.update(for: ClientCheck(name: "Goose", transport: .relay, reach: .blocked))
+        let again = ClientCheck(name: "Goose", transport: .relay, reach: .readable)
         acks.update(for: again)
         #expect(acks.needsNotice(again))
     }
@@ -227,8 +227,8 @@ struct BypassNoticeTests {
         func app(_ name: String) -> FullDiskAccessGrant { FullDiskAccessGrant(client: "x", isPath: false, name: name, kind: .other) }
         #expect(app("Claude").matches(clientName: "claude-ai"))
         #expect(app("Cursor").matches(clientName: "cursor-vscode"))
-        #expect(app("Grok Bot").matches(clientName: "Grok Bot"))
-        #expect(!app("PhotoSync").matches(clientName: "Grok Bot"))
+        #expect(app("Goose").matches(clientName: "Goose"))
+        #expect(!app("PhotoSync").matches(clientName: "Goose"))
         #expect(!app("iTerm").matches(clientName: "claude-code"))
     }
 }

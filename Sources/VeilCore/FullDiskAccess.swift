@@ -24,7 +24,7 @@ public struct FullDiskAccessGrant: Equatable, Sendable, Identifiable {
     public var isLikelyAssistantHost: Bool { kind != .other }
 
     /// Whether this app is probably the one an assistant with this client name runs in
-    /// ("claude-ai" → Claude, "cursor-vscode" → Cursor, "Grok Bot" → Grok Bot).
+    /// ("claude-ai" → Claude, "cursor-vscode" → Cursor, "Goose" → Goose).
     public func matches(clientName: String) -> Bool {
         func words(_ s: String) -> [String] {
             s.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 }
@@ -157,12 +157,12 @@ extension DemoData {
 
     /// Full Disk Access grants shown in demo mode.
     public static let demoFullDiskAccess: [TCCRow] = [
-        TCCRow("io.github.benlittlle.veil"), TCCRow("com.example.grokbot"), TCCRow("com.googlecode.iterm2"),
+        TCCRow("io.github.benlittlle.veil"), TCCRow("com.example.goose"), TCCRow("com.googlecode.iterm2"),
         TCCRow("com.anthropic.claudefordesktop", service: "kTCCServiceAccessibility"),
         TCCRow("/opt/homebrew/bin/node", path: true), TCCRow("com.example.photosync"), TCCRow("com.apple.Terminal", allowed: false),
     ]
     public static let demoAppNames: [String: String] = [
-        "com.example.grokbot": "Grok Bot", "com.googlecode.iterm2": "iTerm", "com.example.photosync": "PhotoSync",
+        "com.example.goose": "Goose", "com.googlecode.iterm2": "iTerm", "com.example.photosync": "PhotoSync",
     ]
 
     /// Builds a fake TCC.db. `legacy` uses the pre-macOS 11 layout (`allowed` instead of `auth_value`).

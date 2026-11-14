@@ -34,7 +34,7 @@ Veil's switches decide what an assistant gets *through Veil*. An app with Full D
 
 **How Veil knows.** macOS attributes file access to the app that launched a process, so the relay runs with the access of the assistant's app. When it starts, the relay asks the system to open `~/Library/Messages/chat.db` and closes it again straight away, without reading anything, and passes that one yes/no to Veil. Veil remembers it per assistant name.
 
-**What you see.** If an assistant's app has Full Disk Access, *Setup & safety* and *Connect* show a notice ("Grok Bot runs with Full Disk Access, so it could read Messages directly. Veil's limits only apply to what it asks Veil for.") and the menu bar panel shows a quiet line. *Why this matters and what you can do* lists the options:
+**What you see.** If an assistant's app has Full Disk Access, *Setup & safety* and *Connect* show a notice ("Goose runs with Full Disk Access, so it could read Messages directly. Veil's limits only apply to what it asks Veil for.") and the menu bar panel shows a quiet line. *Why this matters and what you can do* lists the options:
 
 - Many agents only need a few folders, which macOS grants separately under *Privacy & Security → Files and Folders*, so Full Disk Access is often more than needed.
 - Turn off the agent's own Messages integration so it uses Veil.

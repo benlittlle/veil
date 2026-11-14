@@ -635,7 +635,7 @@ final class AppModel: ObservableObject {
     // MARK: Bypass warnings
 
     static let demoClientChecks = [
-        ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable, lastSeen: Date().addingTimeInterval(-600)),
+        ClientCheck(name: "Goose", transport: .relay, reach: .readable, lastSeen: Date().addingTimeInterval(-600)),
         ClientCheck(name: "Web Helper", transport: .http, reach: .cantCheckHTTP, lastSeen: Date().addingTimeInterval(-7200)),
     ]
 

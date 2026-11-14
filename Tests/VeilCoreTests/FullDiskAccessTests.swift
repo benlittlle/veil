@@ -18,7 +18,7 @@ struct FullDiskAccessTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let db = try build(DemoData.demoFullDiskAccess)
         let list = try #require(FullDiskAccessList.read(system: db, user: nil, resolveName: { DemoData.demoAppNames[$0] }))
-        #expect(list.map(\.name) == ["Grok Bot", "iTerm", "node", "PhotoSync"])
+        #expect(list.map(\.name) == ["Goose", "iTerm", "node", "PhotoSync"])
         #expect(list.map(\.kind) == [.ai, .terminal, .commandLine, .other])
         #expect(list.filter(\.isLikelyAssistantHost).count == 3)
         // Veil itself, other services and denied rows are left out.

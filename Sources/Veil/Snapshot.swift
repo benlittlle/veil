@@ -107,12 +107,12 @@ enum Snapshot {
         }
         render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-locked.png"), model: model)
         (model.integrity, model.signingKeyMissing, model.legacyKeyAvailable) = saved
-        // Bypass warnings: Grok Bot's app has Full Disk Access; Assistant checked out fine; a web client can't be checked.
+        // Bypass warnings: Goose's app has Full Disk Access; Assistant checked out fine; a web client can't be checked.
         model.clientCheckStore.record(ClientCheck(name: "Assistant", transport: .relay, reach: .blocked))
         for c in AppModel.demoClientChecks { model.clientCheckStore.record(c) }
-        model.clientCheckStore.record(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        model.clientCheckStore.record(ClientCheck(name: "Goose", transport: .relay, reach: .readable))
         model.clientChecks = model.clientCheckStore.all
-        model.clients = ["Assistant", "Grok Bot"]
+        model.clients = ["Assistant", "Goose"]
         for dark in [false, true] {
             let suffix = dark ? "-dark" : ""
             render(MainView(pane: .setup), size: CGSize(width: 960, height: 1500), dark: dark, to: dir.appendingPathComponent("setup-bypass\(suffix).png"), model: model)
@@ -122,10 +122,10 @@ enum Snapshot {
         render(BypassNotice(expanded: true).padding(20).frame(width: 640).background(Theme.window), size: nil, dark: false,
                to: dir.appendingPathComponent("notice-expanded.png"), model: model)
         // After "I understand": a quiet status line instead of the notice.
-        model.acknowledge(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        model.acknowledge(ClientCheck(name: "Goose", transport: .relay, reach: .readable))
         render(MainView(pane: .setup), size: CGSize(width: 960, height: 1300), dark: false, to: dir.appendingPathComponent("setup-acknowledged.png"), model: model)
         render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-acknowledged.png"), model: model)
-        model.unacknowledge(ClientCheck(name: "Grok Bot", transport: .relay, reach: .readable))
+        model.unacknowledge(ClientCheck(name: "Goose", transport: .relay, reach: .readable))
         for c in model.clientCheckStore.all { model.forgetClientCheck(c.name) }
         model.clientChecks = []
         model.clients = ["Assistant"]
