@@ -19,7 +19,8 @@ STAGE=build/dmg
 rm -rf "$STAGE" "$DMG"; mkdir -p "$STAGE"
 cp -R build/Veil.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Veil $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+# LZMA-compressed (ULMO, macOS 10.15 and later): about a quarter smaller than the default UDZO.
+hdiutil create -volname "Veil $VERSION" -srcfolder "$STAGE" -fs HFS+ -format ULMO -ov "$DMG" >/dev/null
 codesign --force --sign "$IDENTITY" --timestamp "$DMG"
 
 echo "Notarizing (usually a few minutes)…"
