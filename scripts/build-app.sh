@@ -28,6 +28,15 @@ ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/Veil" 2>/dev/null || true
 cp "$BIN/veil-mcp" "$APP/Contents/MacOS/veil-mcp"
+for exe in "$APP/Contents/MacOS/Veil" "$APP/Contents/MacOS/veil-mcp"; do
+  # Local symbols and debug notes are more than half of the binary and aren't needed to run.
+  strip -x "$exe"
+  # Keep only the system Swift libraries and the bundle's Frameworks folder; drop paths into the
+  # build machine's toolchain and the build folder.
+  otool -l "$exe" | awk '/cmd LC_RPATH/{getline; getline; print $2}' | while read -r r; do
+    case "$r" in /usr/lib/swift|@executable_path/../Frameworks) ;; *) install_name_tool -delete_rpath "$r" "$exe" ;; esac
+  done
+done
 
 # App icon: built from the branding artwork on every build (graphite, the default accent).
 # The 1024px PNG is already a rounded tile with a transparent surround.
