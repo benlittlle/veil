@@ -68,7 +68,10 @@ final class AppModel: ObservableObject {
     private var reloading = false
     @Published var httpError: String?
 
-    private static let defaults = UserDefaults.standard
+    /// Demo and snapshot runs keep their own settings, so trying the demo never changes the real app's.
+    static let isDemoRun = CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--snapshot")
+    private static let defaults: UserDefaults = isDemoRun
+        ? (UserDefaults(suiteName: "io.github.benlittlle.veil.demo") ?? .standard) : .standard
     @Published var assistantName = defaults.string(forKey: "assistantName") ?? "Assistant" {
         didSet { Self.defaults.set(assistantName, forKey: "assistantName") }
     }

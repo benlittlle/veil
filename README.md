@@ -32,7 +32,7 @@ your click.
 
 ## Install
 
-Requires macOS 14 or later. The optional on-device filter needs Apple Intelligence (macOS 26+; photo checks need macOS 27).
+Requires a Mac with Apple silicon and macOS 14 or later. The optional on-device filter needs Apple Intelligence (macOS 26+; photo checks need macOS 27).
 
 A signed download is on the way. For now, build it with Xcode 27:
 
