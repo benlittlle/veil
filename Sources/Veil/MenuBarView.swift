@@ -13,6 +13,19 @@ struct MenuBarView: View {
                 SettingsApprovalCard(request: r, compact: true)
             }
             BypassMenuRow { openMain(.setup) }
+            if model.state.agentSettings == .direct {
+                // Same quiet shape as the Full Disk Access line: a standing risk, not an event.
+                Button { openMain(.settings) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle").font(.system(size: 11)).foregroundStyle(Theme.caution)
+                        Text("\(model.assistantName) changes settings without asking").font(.system(size: 11)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
 
             if let r = model.waitingSends.first {
                 ApprovalCard(request: r, compact: true)
@@ -47,7 +60,7 @@ struct MenuBarView: View {
                 if model.log.isEmpty {
                     Text("Quiet so far.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 6)
                 } else {
-                    ForEach(model.log.suffix(4).reversed()) { ActivityRow(entry: $0, compact: true) }
+                    ForEach(model.log.suffix(3).reversed()) { ActivityRow(entry: $0, compact: true) }
                 }
             }
 

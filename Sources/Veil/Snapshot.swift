@@ -96,6 +96,7 @@ enum Snapshot {
         _ = g.call(tool: "change_chat_settings", arguments: ["chat_id": .string(DemoData.ID.climbing), "activity": true], client: "Assistant")
         model.log = g.log.all
         render(MainView(pane: .settings), size: CGSize(width: 960, height: 900), dark: false, to: dir.appendingPathComponent("settings-agent-direct.png"), model: model)
+        render(MenuBarView(openMain: { _ in }), size: nil, dark: false, to: dir.appendingPathComponent("menu-settings-direct.png"), model: model)
         render(ActivityView().background(Theme.window), size: CGSize(width: 760, height: 420), dark: false, to: dir.appendingPathComponent("activity-settings.png"), model: model)
         model.setAgentSettings(.off)
         model.settingsRequests = g.settingsRequests
