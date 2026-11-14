@@ -189,6 +189,14 @@ struct ActivityRow: View {
         case "check_send_status": return "Checked a send"
         case "approve_send": return "You sent"
         case "decline_send": return "You declined"
+        case "get_settings": return "Looked at settings"
+        case "get_chat_settings": return "Looked at settings for"
+        case "change_chat_settings": return "Settings for"
+        case "change_app_settings": return "App settings"
+        case "check_settings_request": return "Checked a settings request"
+        case "approve_settings": return "You approved settings"
+        case "decline_settings": return "You declined settings"
+        case "expire_settings": return "Settings request expired"
         default: return tool
         }
     }
@@ -202,6 +210,8 @@ struct ActivityRow: View {
         case "list_attachments", "get_attachment": return "photo"
         case "draft_reply": return "square.and.pencil"
         case "request_send", "check_send_status", "approve_send", "decline_send": return "paperplane"
+        case "get_settings", "get_chat_settings", "change_chat_settings", "change_app_settings", "check_settings_request",
+             "approve_settings", "decline_settings", "expire_settings": return "slider.horizontal.3"
         default: return "questionmark"
         }
     }

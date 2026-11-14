@@ -22,7 +22,7 @@ struct MenuBarIcon: View {
         // A template glyph of the Veil mark: hollow bubble when paused, a dot when a send is waiting.
         if model.state.paused {
             Image(nsImage: VeilGlyph.menuBarImage(.paused))
-        } else if !model.waitingSends.isEmpty {
+        } else if !model.waitingSends.isEmpty || !model.waitingSettings.isEmpty {
             Image(nsImage: VeilGlyph.menuBarImage(.attention))
         } else {
             Image(nsImage: VeilGlyph.menuBarImage(.normal))
@@ -49,6 +49,7 @@ struct MenuBarIcon: View {
         NSApp.setActivationPolicy(.accessory)
         MainActor.assumeIsolated {
             model.onSendRequested = { [weak self] _ in self?.showApproval() }
+            model.onSettingsRequested = { [weak self] _ in self?.showApproval() }
             model.start()
             if !args.contains("--demo") { Updates.shared.start() }
             // First run, or something needs attention: open the window.
@@ -110,7 +111,7 @@ struct MenuBarIcon: View {
             // Close the panel automatically once nothing is waiting.
             Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty else { return }
+                    guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty, self.model.waitingSettings.isEmpty else { return }
                     p.orderOut(nil)
                 }
             }

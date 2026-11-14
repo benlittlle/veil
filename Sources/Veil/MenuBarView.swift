@@ -9,6 +9,10 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            if let r = model.waitingSettings.last {
+                SettingsApprovalCard(request: r, compact: true)
+            }
+
             if let r = model.waitingSends.first {
                 ApprovalCard(request: r, compact: true)
             }
@@ -167,15 +171,84 @@ struct ApprovalCard: View {
     }
 }
 
-/// Floating panel content: shows the oldest waiting request, if any.
+/// Floating panel content: shows the oldest waiting request, if any (settings changes first).
 struct ApprovalPanelView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        if let r = model.waitingSends.last {
+        if let r = model.waitingSettings.last {
+            SettingsApprovalCard(request: r).frame(width: 400)
+        } else if let r = model.waitingSends.last {
             ApprovalCard(request: r).frame(width: 400)
         } else {
             Color.clear.frame(width: 400, height: 1)
         }
+    }
+}
+
+/// Allow / Don't allow for a settings change the assistant asked for. Same protections as the send
+/// prompt: the panel never takes keyboard focus, Allow arms after a moment, and a request is applied once.
+struct SettingsApprovalCard: View {
+    @EnvironmentObject var model: AppModel
+    let request: SettingsRequest
+    var compact = false
+    @State private var armed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 10 : 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: compact ? 12 : 14, weight: .medium)).foregroundStyle(Theme.accent)
+                    .frame(width: compact ? 28 : 36, height: compact ? 28 : 36)
+                    .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(model.assistantName) wants to change settings").font(.system(size: compact ? 13 : 15, weight: .semibold))
+                    Text("Nothing changes unless you allow it. Only allow changes you asked for.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(request.phrases.prefix(compact ? 4 : 12).enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Circle().fill(Theme.accent).frame(width: 5, height: 5).alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
+                        Text(line.prefix(1).uppercased() + line.dropFirst())
+                            .font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if compact && request.phrases.count > 4 {
+                    Text("and \(request.phrases.count - 4) more").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            if let c = request.caution {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.caution)
+                    Text(c).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 8) {
+                // The client picks its own name, so it's shown as a cleaned-up label only.
+                Text("Asked by \(request.client)").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                if model.waitingSettings.count > 1 {
+                    Text("· \(model.waitingSettings.count - 1) more waiting").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Don't allow") { model.declineSettings(request.id) }
+                    .buttonStyle(QuietButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Allow") { model.approveSettings(request.id) }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(!armed).opacity(armed ? 1 : 0.5)
+            }
+        }
+        .padding(compact ? 12 : 20)
+        .task(id: request.id) {
+            armed = false
+            try? await Task.sleep(for: .seconds(1.2))
+            armed = true
+        }
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(compact ? Theme.accent.opacity(0.35) : .clear, lineWidth: 1))
     }
 }
 

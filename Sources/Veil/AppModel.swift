@@ -31,6 +31,8 @@ final class AppModel: ObservableObject {
     @Published var log: [LogEntry] = []
     @Published var drafts: [Draft] = []
     @Published var sends: [SendRequest] = []
+    /// Settings changes the assistant asked for (Ask me, or allowing codes).
+    @Published var settingsRequests: [SettingsRequest] = []
     @Published var clients: [String] = []
     @Published var contactsStatus: CNAuthorizationStatus = .notDetermined
     @Published var serverError: String?
@@ -126,6 +128,9 @@ final class AppModel: ObservableObject {
     }
 
     var onSendRequested: ((SendRequest) -> Void)?
+    var onSettingsRequested: ((SettingsRequest) -> Void)?
+    /// The assistant name and ping switches, shared with the gate (the settings tools can change them).
+    private let preferences: DefaultsPreferences
 
     // MARK: Moving over from the app's old name
 
@@ -217,6 +222,8 @@ final class AppModel: ObservableObject {
         self.mode = mode
         self.migration = migration
         let fm = FileManager.default
+        let preferences = DefaultsPreferences(Self.defaults)
+        self.preferences = preferences
         switch mode {
         case .live:
             supportDir = Self.liveSupportDir
@@ -235,6 +242,7 @@ final class AppModel: ObservableObject {
                 // recognition, and SensitiveContentAnalysis when this Mac allows it.
                 imageClassifier: AppleOnDeviceImageClassifier(), textRecognizer: VisionTextRecognizer(),
                 nudityDetector: SensitiveContentDetector(),
+                preferences: preferences,
                 openStore: {
                     try MessagesStore(databasePath: home.appendingPathComponent("Library/Messages/chat.db").path,
                                       attachmentsRoot: home.appendingPathComponent("Library/Messages/Attachments"))
@@ -261,6 +269,7 @@ final class AppModel: ObservableObject {
                 permissions: PermissionStore(url: supportDir.appendingPathComponent("permissions.json"), secrets: MemorySecretStore()),
                 log: AccessLog(url: nil), contacts: StaticContacts(DemoData.contacts), sender: RecordingSender(),
                 classifier: DemoClassifier(), imageClassifier: DemoImageClassifier(), textRecognizer: VisionTextRecognizer(),
+                preferences: preferences,
                 openStore: { try MessagesStore(databasePath: paths.db.path, attachmentsRoot: paths.attachments) })
             webhook = WebhookNotifier(permissions: gate.permissions,
                                       openStore: { try MessagesStore(databasePath: paths.db.path, attachmentsRoot: paths.attachments) },
@@ -278,6 +287,10 @@ final class AppModel: ObservableObject {
         gate.onSendRequested = { [weak self] r in Task { @MainActor in self?.syncOutbox(); self?.onSendRequested?(r) } }
         gate.autoSends.onChange = { [weak self] in Task { @MainActor in self?.autoSendHistory = self?.gate.autoSends.all ?? [] } }
         gate.onAutoSend = { [weak self] r in Task { @MainActor in self?.notifyAutoSend(r) } }
+        gate.onSettingsRequested = { [weak self] r in Task { @MainActor in self?.syncOutbox(); self?.onSettingsRequested?(r) } }
+        gate.onSettingsApplied = { [weak self] r in Task { @MainActor in self?.notifySettingsChange(r) } }
+        gate.onSettingsChange = { [weak self] in Task { @MainActor in self?.settingsChanged() } }
+        preferences.onChange = { [weak self] in Task { @MainActor in self?.syncPreferences() } }
         autoSendHistory = gate.autoSends.all
         webhook.log.onAppend = { [weak self] in Task { @MainActor in self?.webhookLog = self?.webhook.log.all ?? [] } }
         webhookLog = webhook.log.all
@@ -320,6 +333,10 @@ final class AppModel: ObservableObject {
         // Pick up new chats while the app is running.
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload(); self?.gate.pruneFinishedSends() }
+        }
+        // Settings requests nobody answered expire; take them off the screen soon after.
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.gate.expireSettingsRequests() }
         }
         // Content filter: judge new messages in filtered chats ahead of time, on this Mac.
         refreshFilterStatus()
@@ -374,15 +391,15 @@ final class AppModel: ObservableObject {
     func binding(_ id: String, _ key: WritableKeyPath<ChatAccess, Bool>) -> Binding<Bool> {
         Binding(get: { self.access(id)[keyPath: key] },
                 set: { v in
-                    var a = self.access(id); a[keyPath: key] = v
-                    if key == \.send && !v { a.autoSend = false }   // re-enabling Send never revives auto-send
+                    var a = self.access(id)
+                    a.set(key, v)   // turning Send off also turns auto-send off; turning it back on never revives it
                     self.setAccess(a, for: id)
                 })
     }
 
     func setAccess(_ a: ChatAccess, for id: String) { save { try self.gate.setAccess(a, for: id) } }
     func setAutoSend(_ on: Bool, for id: String) {
-        var a = access(id); a.autoSend = on && a.send
+        var a = access(id); a.set(\.autoSend, on)
         setAccess(a, for: id)
         if a.autoSend && autoSendNotify { requestNotifications() }
     }
@@ -404,11 +421,56 @@ final class AppModel: ObservableObject {
     }
 
     private func notifyAutoSend(_ r: AutoSendRecord) {
+        notify(id: r.id.uuidString, title: r.outcome == .sent ? "\(assistantName) sent a message to \(r.chatName)" : "Auto-send to \(r.chatName) failed",
+               body: String(r.text.prefix(180)))
+    }
+
+    /// Apply directly: one notification per change, under the same "Notify me" setting as auto-send.
+    private func notifySettingsChange(_ r: SettingsRequest) {
+        notify(id: r.id, title: "\(assistantName) changed settings\(r.chatName.map { " for \($0)" } ?? "")",
+               body: String(r.shortSummary.prefix(180)))
+    }
+
+    private func notify(id: String, title: String, body: String) {
         guard autoSendNotify, canNotify else { return }
         let c = UNMutableNotificationContent()
-        c.title = r.outcome == .sent ? "\(assistantName) sent a message to \(r.chatName)" : "Auto-send to \(r.chatName) failed"
-        c.body = String(r.text.prefix(180))
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: r.id.uuidString, content: c, trigger: nil))
+        c.title = title
+        c.body = body
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: c, trigger: nil))
+    }
+
+    // MARK: Assistant can change settings (the mode itself is UI only)
+
+    func setAgentSettings(_ mode: AgentSettingsMode) {
+        save { try self.gate.setAgentSettings(mode) }
+        syncOutbox()
+        if mode == .direct && autoSendNotify { requestNotifications() }
+    }
+
+    var waitingSettings: [SettingsRequest] { settingsRequests.filter { $0.status == .pending } }
+
+    func approveSettings(_ id: String) {
+        let gate = self.gate
+        DispatchQueue.global(qos: .userInitiated).async {
+            gate.approveSettings(id)
+            Task { @MainActor in self.syncOutbox(); self.refreshIntegrity() }
+        }
+    }
+    func declineSettings(_ id: String) { gate.declineSettings(id); syncOutbox() }
+
+    /// The settings tools (or an approval) changed something: show it and re-check filtered chats.
+    private func settingsChanged() {
+        refreshIntegrity()
+        syncOutbox()
+        syncPreferences()
+        for id in filterReview.keys { loadFilterReview(id) }
+        warmFilter()
+    }
+
+    private func syncPreferences() {
+        if assistantName != preferences.assistantName { assistantName = preferences.assistantName }
+        if webhookEnabled != preferences.newMessagePings { webhookEnabled = preferences.newMessagePings }
+        if webhookPingReplies != preferences.pingWhenIReply { webhookPingReplies = preferences.pingWhenIReply }
     }
 
     // MARK: Content filter (UI only)
@@ -493,7 +555,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Outbox
 
-    private func syncOutbox() { drafts = gate.drafts; sends = gate.sends }
+    private func syncOutbox() { drafts = gate.drafts; sends = gate.sends; settingsRequests = gate.settingsRequests }
 
     func approve(_ id: String) {
         let gate = self.gate
@@ -576,6 +638,23 @@ final class AppModel: ObservableObject {
     }
 
     func copy(_ s: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(s, forType: .string) }
+}
+
+/// The assistant name and ping switches, read and written straight from UserDefaults (which is
+/// thread-safe), so the gate can use them from MCP threads. The model mirrors them for the UI.
+final class DefaultsPreferences: AppPreferences, @unchecked Sendable {
+    private let d: UserDefaults
+    var onChange: (() -> Void)?
+    init(_ d: UserDefaults) { self.d = d }
+    var assistantName: String { d.string(forKey: "assistantName") ?? "Assistant" }
+    var newMessagePings: Bool { d.bool(forKey: "webhookEnabled") }
+    var pingWhenIReply: Bool { d.object(forKey: "webhookPingReplies") as? Bool ?? true }
+    func update(assistantName: String?, newMessagePings: Bool?, pingWhenIReply: Bool?) {
+        if let assistantName { d.set(assistantName, forKey: "assistantName") }
+        if let newMessagePings { d.set(newMessagePings, forKey: "webhookEnabled") }
+        if let pingWhenIReply { d.set(pingWhenIReply, forKey: "webhookPingReplies") }
+        onChange?()
+    }
 }
 
 extension Conversation {
