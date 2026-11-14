@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var keyDraft = ""
     @State private var confirmDirect = false
+    @State private var showWebhook = false
 
     var body: some View {
         ScrollView {
@@ -81,7 +82,11 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "\(name)'s access to settings")
             Card {
-                row("\(name) can change settings", agentDetail(mode)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(name) can change settings").font(.system(size: 13, weight: .medium))
+                        Text(agentDetail(mode)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     Picker("", selection: Binding(get: { mode }, set: { m in
                         if m == .direct { confirmDirect = true } else { model.setAgentSettings(m) }
                     })) {
@@ -89,6 +94,8 @@ struct SettingsView: View {
                     }.pickerStyle(.segmented).labelsHidden().fixedSize()
                     .accessibilityLabel("Assistant can change settings")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 12)
             }
             if mode == .direct {
                 HStack(alignment: .top, spacing: 10) {
@@ -127,15 +134,16 @@ struct SettingsView: View {
             Card {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Default settings for filtered chats").font(.system(size: 13, weight: .medium))
-                    Text("Turn the filter on per chat under Chats. Everything is checked on this Mac before \(model.assistantName) sees it. It lowers the risk; it can't promise to catch everything. Only Read off keeps a chat fully private.")
+                    Text("Turn the filter on per chat under Chats. Everything is checked on this Mac first. It lowers the risk but can't catch everything; only Read off keeps a chat fully private.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     FilterModelStatus(policy: profile).padding(.top, 2)
                     Text(filtered.isEmpty ? "No chats are filtered yet." : "Filtered: " + filtered.map(\.displayName).joined(separator: ", "))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.vertical, 12)
             }
-            FilterPolicyEditor(policy: profile) { model.setFilterProfile($0) }
+            FilterPolicyEditor(policy: profile, onChange: { model.setFilterProfile($0) }, collapsible: true)
             if profile != .standard {
                 Button("Back to the standard settings") { model.setFilterProfile(.standard) }
                     .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent).padding(.leading, 4)
@@ -151,7 +159,7 @@ struct SettingsView: View {
             Card {
                 row("Allow auto-send", model.state.autoSendStopped
                     ? "Stopped. Every message needs your OK, even in chats set to auto-send."
-                    : "Chats you set to auto-send skip the approval prompt for text. Turn this off to stop them all at once.") {
+                    : "Chats set to auto-send skip the prompt for text. Turn off to stop them all.") {
                     Toggle("", isOn: Binding(get: { !model.state.autoSendStopped }, set: { model.setAutoSendStopped(!$0) }))
                         .toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                         .accessibilityLabel("Allow auto-send")
@@ -169,7 +177,7 @@ struct SettingsView: View {
                     }
                 }
                 Divider().padding(.leading, 16)
-                row("Notify me", "Show a notification with the text after each auto-sent message, and after each settings change \(model.assistantName) makes without asking.") {
+                row("Notify me", "A notification after each auto-sent message, and each settings change made without asking.") {
                     Toggle("", isOn: $model.autoSendNotify)
                         .toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                         .accessibilityLabel("Notify after each auto-send")
@@ -183,21 +191,44 @@ struct SettingsView: View {
 
     // MARK: New-message pings
 
+    /// The webhook rows stay folded away until pings are on or something is filled in.
+    var webhookConfigured: Bool { model.webhookEnabled || !model.webhookURL.isEmpty || model.webhookKeySaved }
+
     var pingsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "New-message pings")
             Card {
-                row("Ping on new messages", "When someone texts a chat that has Read or Activity on, tell \(model.assistantName) so it can check. The ping names the chat, message number and direction, never what was said.") {
+                row("Ping on new messages", "Tell \(model.assistantName) when a chat with Read or Activity on gets a message. Pings name the chat, never what was said.") {
                     Toggle("", isOn: $model.webhookEnabled)
                         .toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                         .accessibilityLabel("Ping on new messages")
                 }
                 Divider().padding(.leading, 16)
-                row("Ping when I reply", "In chats with Activity on, your own messages ping too, so \(model.assistantName) knows you've answered.") {
+                row("Ping when I reply", "Your own messages ping too, so \(model.assistantName) knows you've answered.") {
                     Toggle("", isOn: $model.webhookPingReplies)
                         .toggleStyle(.switch).labelsHidden().tint(Theme.accent).controlSize(.small)
                         .accessibilityLabel("Ping when I reply")
                 }
+                if webhookConfigured || showWebhook {
+                    webhookRows
+                } else {
+                    Divider().padding(.leading, 16)
+                    row("Webhook", "Where pings go. Set this up to use pings.") {
+                        Button("Set Up…") { showWebhook = true }.buttonStyle(QuietButtonStyle())
+                    }
+                }
+            }
+            if let p = model.webhookProblem {
+                Text(p).font(.system(size: 11)).foregroundStyle(Theme.caution).padding(.leading, 4)
+            }
+
+            if webhookConfigured || !model.webhookLog.isEmpty {
+                recentPings
+            }
+        }
+    }
+
+    @ViewBuilder var webhookRows: some View {
                 Divider().padding(.leading, 16)
                 row("Webhook address", "Where pings are sent. Must be https.") {
                     TextField("https://", text: $model.webhookURL).textFieldStyle(.roundedBorder).frame(width: 260)
@@ -230,11 +261,9 @@ struct SettingsView: View {
                     Spacer()
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
-            }
-            if let p = model.webhookProblem {
-                Text(p).font(.system(size: 11)).foregroundStyle(Theme.caution).padding(.leading, 4)
-            }
+    }
 
+    @ViewBuilder var recentPings: some View {
             HStack {
                 SectionLabel(text: "Recent pings")
                 Spacer()
@@ -252,7 +281,6 @@ struct SettingsView: View {
                     pingRow(e)
                 }
             }
-        }
     }
 
     var canTest: Bool {
@@ -322,7 +350,7 @@ struct SettingsView: View {
                 Text(title).font(.system(size: 13, weight: .medium))
                 Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             control()
         }
         .padding(.horizontal, 16).padding(.vertical, 12)

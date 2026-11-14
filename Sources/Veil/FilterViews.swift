@@ -7,10 +7,45 @@ struct FilterPolicyEditor: View {
     @EnvironmentObject var model: AppModel
     let policy: FilterPolicy
     let onChange: (FilterPolicy) -> Void
+    /// Start as a one-line summary with a Show button (Settings). Warnings stay visible either way.
+    var collapsible = false
     @State private var confirmCodes = false
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if collapsible && !expanded {
+                Card {
+                    row("Categories", summary) {
+                        Button("Show") { expanded = true }.buttonStyle(QuietButtonStyle())
+                    }
+                }
+                if policy.action(.codes) == .allow { codesWarning }
+                if policy.attachments == .allow { photosWarning }
+            } else {
+                editor
+                if collapsible {
+                    Button("Hide categories") { expanded = false }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent).padding(.leading, 4)
+                }
+            }
+        }
+        .alert("Let \(model.assistantName) see PINs and verification codes?", isPresented: $confirmCodes) {
+            Button("Allow codes", role: .destructive) { var p = policy; p.set(.codes, .allow); onChange(p) }
+            Button("Keep masking", role: .cancel) {}
+        } message: {
+            Text("An assistant that can read one-time codes can use them to sign in to your accounts, reset passwords or approve payments. Only allow this if you're sure.")
+        }
+    }
+
+    /// "11 of 11 kinds filtered · Balanced · Photos: Check"
+    var summary: String {
+        let cats = FilterCategory.detectorCategories + FilterCategory.modelCategories
+        let on = cats.filter { policy.action($0) != .allow }.count
+        return "\(on) of \(cats.count) kinds of content filtered · \(policy.strictness.title) · Photos: \(policy.attachments.title)"
+    }
+
+    @ViewBuilder var editor: some View {
             Card {
                 header("Found by pattern", "Matched on this Mac. Mask keeps the message and replaces just the match.")
                 ForEach(FilterCategory.detectorCategories) { c in
@@ -51,13 +86,6 @@ struct FilterPolicyEditor: View {
                 }
             }
             if policy.attachments == .allow { photosWarning }
-        }
-        .alert("Let \(model.assistantName) see PINs and verification codes?", isPresented: $confirmCodes) {
-            Button("Allow codes", role: .destructive) { var p = policy; p.set(.codes, .allow); onChange(p) }
-            Button("Keep masking", role: .cancel) {}
-        } message: {
-            Text("An assistant that can read one-time codes can use them to sign in to your accounts, reset passwords or approve payments. Only allow this if you're sure.")
-        }
     }
 
     var photosDetail: String {
@@ -182,8 +210,8 @@ struct ChatFilterSection: View {
             Card {
                 ToggleRow(icon: "line.3.horizontal.decrease.circle", title: "Filter sensitive content",
                           detail: a.filtered
-                            ? "Card numbers, codes, passwords and topics you choose are removed on this Mac before \(model.assistantName) sees anything."
-                            : "Off: \(model.assistantName) sees messages exactly as they are (when Read is on).",
+                            ? "Card numbers, codes, passwords and chosen topics are removed on this Mac first."
+                            : "Off: messages are shared exactly as they are.",
                           isOn: Binding(get: { a.filtered }, set: { model.setFiltered($0, for: chat.id) }), disabled: a.hidden)
                 if a.filtered && !a.hidden {
                     Divider().padding(.leading, 60)
@@ -195,7 +223,7 @@ struct ChatFilterSection: View {
                             Text(custom ? "Changes here apply only to \(chat.displayName)." : "Change the default under Settings → Content filter.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
-                        Spacer()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         if custom {
                             Button("Use default") { model.setChatFilterPolicy(nil, for: chat.id); customizing = false }.buttonStyle(QuietButtonStyle())
                         } else {
@@ -228,7 +256,7 @@ struct FilterReviewList: View {
     var body: some View {
         let items = model.filterReview[chatID] ?? []
         let photos = model.photoReview[chatID] ?? []
-        let shown = showAll ? items : Array(items.prefix(8))
+        let shown = showAll ? items : Array(items.prefix(3))
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 SectionLabel(text: "Filtered recently")
