@@ -35,7 +35,10 @@ your click.
 
 Requires a Mac with Apple silicon and macOS 14 or later. The optional on-device filter needs Apple Intelligence (macOS 26+; photo checks need macOS 27).
 
-A signed download is on the way. For now, build it with Xcode 27:
+**[Download Veil](https://github.com/benlittlle/veil/releases/latest)** (the `.dmg`), open it and drag
+Veil to Applications. It's signed and notarized by Apple, and keeps itself up to date.
+
+Or build it yourself with Xcode 27:
 
 ```bash
 git clone https://github.com/benlittlle/veil.git && cd veil
@@ -57,12 +60,13 @@ else, copy the config:
 ```json
 {
   "mcpServers": {
-    "veil": { "command": "/Users/<you>/Applications/Veil.app/Contents/MacOS/veil-mcp" }
+    "veil": { "command": "/Applications/Veil.app/Contents/MacOS/veil-mcp" }
   }
 }
 ```
 
-In Claude Code: `claude mcp add --scope user veil -- ~/Applications/Veil.app/Contents/MacOS/veil-mcp`.
+In Claude Code: `claude mcp add --scope user veil -- /Applications/Veil.app/Contents/MacOS/veil-mcp`.
+If you built Veil yourself, it's in `~/Applications` instead; the *Connect* screen always shows the right path.
 Assistants that only take a URL can use the local web address under *Connect*.
 
 Open a chat in Veil, flip on what you want to share, and ask something like
