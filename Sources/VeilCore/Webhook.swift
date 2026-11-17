@@ -254,6 +254,9 @@ public final class WebhookNotifier {
         timer.schedule(deadline: .now() + wait, leeway: wait < fallback ? .milliseconds(250) : .seconds(5))
     }
 
+    /// New rows read per query, and the most pages one look reads (more waits for the next look).
+    static let pageSize = 500, maxPages = 20
+
     /// Returns false if the database couldn't be read.
     @discardableResult
     private func poll(now: Date) -> Bool {
@@ -263,23 +266,30 @@ public final class WebhookNotifier {
             let store = try self.store ?? openStore()
             self.store = store
             guard let since = lastSeen else { lastSeen = try store.maxMessageRowID(); return true }
-            let rows = try store.messages(afterRowID: since, limit: 500)
             var newest = since
             var chatNames: [Int64: String]?
-            for r in rows {
-                guard let chatRow = r.chatRowID else {
-                    // Messages writes the chat link right after the message; wait for it briefly.
-                    if now.timeIntervalSince(r.date) < 30 { lookAgainSoon = true; break }
-                    newest = max(newest, r.id); continue
+            // A page at a time, so a burst bigger than one page (a sync catching up) is read in one look
+            // instead of one page per fallback tick.
+            for page in 0..<Self.maxPages {
+                let rows = try store.messages(afterRowID: newest, limit: Self.pageSize)
+                // Still more after the last page: look again shortly rather than at the fallback.
+                if page == Self.maxPages - 1, rows.count == Self.pageSize { lookAgainSoon = true }
+                for r in rows {
+                    guard let chatRow = r.chatRowID else {
+                        // Messages writes the chat link right after the message; wait for it briefly.
+                        if now.timeIntervalSince(r.date) < 30 { lookAgainSoon = true; break }
+                        newest = max(newest, r.id); continue
+                    }
+                    newest = max(newest, r.id)
+                    guard r.isPlainMessage, now.timeIntervalSince(r.date) < maxAge else { continue }
+                    if r.isFromMe && config?.pingReplies != true { continue }
+                    if chatNames == nil { chatNames = try store.chatIdentifiers() }
+                    // Policy check: only chats the user has opened. Locked, hidden and paused chats are
+                    // dropped here, before anything is queued.
+                    guard let chat = chatNames?[chatRow], allowed(chat, fromMe: r.isFromMe, date: r.date, now: now) else { continue }
+                    coalescer.add(NewMessagePing(chatID: chat, messageID: r.id, receivedAt: r.date, fromMe: r.isFromMe))
                 }
-                newest = max(newest, r.id)
-                guard r.isPlainMessage, now.timeIntervalSince(r.date) < maxAge else { continue }
-                if r.isFromMe && config?.pingReplies != true { continue }
-                if chatNames == nil { chatNames = try store.chatIdentifiers() }
-                // Policy check: only chats the user has opened. Locked, hidden and paused chats are
-                // dropped here, before anything is queued.
-                guard let chat = chatNames?[chatRow], allowed(chat, fromMe: r.isFromMe, date: r.date, now: now) else { continue }
-                coalescer.add(NewMessagePing(chatID: chat, messageID: r.id, receivedAt: r.date, fromMe: r.isFromMe))
+                if lookAgainSoon || rows.count < Self.pageSize { break }
             }
             lastSeen = newest
         } catch {

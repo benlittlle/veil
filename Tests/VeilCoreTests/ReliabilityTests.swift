@@ -67,6 +67,19 @@ struct ReliabilityTests {
         #expect(ids.allSatisfy { loaded.isReviewed($0) == s.isReviewed($0) })
     }
 
+    @Test func aBurstBiggerThanOnePageIsPingedInOneLook() async throws {
+        let p = try PingHarness()
+        try p.db.query("BEGIN")
+        try p.incoming(chatRow: 1)                                   // Mom, first
+        for _ in 0..<(WebhookNotifier.pageSize * 2) { try p.incoming(chatRow: 4) }   // the therapist: locked, never pinged
+        try p.incoming(chatRow: 3)                                   // Alex, last, two pages further on
+        try p.db.query("COMMIT")
+        p.notifier.tick()
+        await p.settle { p.transport.requests.count >= 2 }
+        let chats = Set(p.bodies.compactMap { $0["chat_id"] as? String })
+        #expect(chats == [ID.mom, ID.alex])
+    }
+
     // MARK: Watching chat.db
 
     @Test func watcherPicksUpTheDatabaseOnceItCanBeOpened() async throws {
