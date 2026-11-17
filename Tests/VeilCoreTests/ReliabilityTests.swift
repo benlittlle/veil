@@ -47,4 +47,84 @@ struct ReliabilityTests {
         #expect(f.text(of: "huge") == huge.trimmingCharacters(in: .whitespaces))
         #expect(f.fake.calls.isEmpty)
     }
+
+    // MARK: Edited and unsent messages
+
+    /// Adds the edit and unsend columns newer chat.db files have, and messages to Mom's chat (row 1).
+    final class EditHarness {
+        let h: Harness
+        let db: SQLiteDB
+        private var nextID: Int64 = 30_000
+        init(access: [String: ChatAccess] = Harness.defaultAccess) throws {
+            h = try Harness(access: access)
+            db = try SQLiteDB(path: h.dir.appendingPathComponent("chat.db").path, readOnly: false)
+            try db.query("ALTER TABLE message ADD COLUMN date_edited INTEGER DEFAULT 0")
+            try db.query("ALTER TABLE message ADD COLUMN date_retracted INTEGER DEFAULT 0")
+        }
+        @discardableResult
+        func add(text: String?, body: String?, edited: Bool = false, unsent: Bool = false, minutesAgo: Double = 5) throws -> Int64 {
+            nextID += 1
+            let date = appleTimestamp(Date().addingTimeInterval(-minutesAgo * 60))
+            let later = appleTimestamp(Date())
+            try db.query("""
+                INSERT INTO message (ROWID, guid, text, attributedBody, handle_id, date, is_from_me, date_edited, date_retracted)
+                VALUES (?,?,?,?,1,?,0,?,?)
+                """, [.int(nextID), .text("EDIT-\(nextID)"), text.map { .text($0) } ?? .null,
+                      body.map { .blob(DemoData.archived($0)) } ?? .null, .int(date),
+                      .int(edited ? later : 0), .int(unsent ? later : 0)])
+            try db.query("INSERT INTO chat_message_join VALUES (1, ?, ?)", [.int(nextID), .int(date)])
+            return nextID
+        }
+        func text(of id: Int64) -> String? {
+            let msgs = h.call("read_chat", ["chat_id": .string(ID.mom), "limit": 200]).json["messages"]?.array ?? []
+            return msgs.first { $0["id"]?.int.map(Int64.init) == id }?["text"]?.string
+        }
+    }
+
+    @Test func editedMessagesShowOnlyTheirCurrentText() throws {
+        let e = try EditHarness()
+        // The text column still holds the first version; attributedBody has the edit.
+        let edited = try e.add(text: "SECRET first version", body: "Running late, sorry", edited: true)
+        // An edit with no attributedBody at all: the text column is all there is.
+        let plain = try e.add(text: "See you at noon", body: nil, edited: true, minutesAgo: 4)
+        // An edit whose attributedBody can't be read gets no text rather than the older version.
+        let unreadable = try e.add(text: "SECRET older text", body: nil, edited: true, minutesAgo: 3)
+        try e.db.query("UPDATE message SET attributedBody = ? WHERE ROWID = ?", [.blob(Data([1, 2, 3])), .int(unreadable)])
+
+        #expect(e.text(of: edited) == "Running late, sorry")
+        #expect(e.text(of: plain) == "See you at noon")
+        #expect(e.text(of: unreadable) == nil)
+        let read = e.h.call("read_chat", ["chat_id": .string(ID.mom), "limit": 200]).raw
+        #expect(!read.contains("SECRET"))
+
+        // Search sees the current text only.
+        #expect(e.h.call("search_messages", ["query": "first version"]).json["results"]?.array?.isEmpty == true)
+        #expect(e.h.call("search_messages", ["query": "older text"]).json["results"]?.array?.isEmpty == true)
+        let found = e.h.call("search_messages", ["query": "running late"]).json["results"]?.array ?? []
+        let ids = found.compactMap { $0["message"]?["id"]?.int }
+        #expect(ids.contains(Int(edited)))
+        // Non-ASCII queries take the other path through search; the result is the same.
+        #expect(e.h.call("search_messages", ["query": "first versión"]).json["results"]?.array?.isEmpty == true)
+    }
+
+    @Test func unsentMessagesHaveNoText() throws {
+        let e = try EditHarness()
+        let unsent = try e.add(text: "SECRET I shouldn't have sent this", body: "SECRET I shouldn't have sent this", unsent: true)
+        let msgs = e.h.call("read_chat", ["chat_id": .string(ID.mom), "limit": 200])
+        #expect(!msgs.raw.contains("SECRET"))
+        #expect(msgs.json["messages"]?.array?.contains { $0["id"]?.int == Int(unsent) } == true)   // still there, without text
+        #expect(e.text(of: unsent) == nil)
+        #expect(e.h.call("search_messages", ["query": "have sent"]).json["results"]?.array?.isEmpty == true)
+        #expect(!e.h.call("waiting_on_reply").raw.contains("SECRET"))
+    }
+
+    @Test func olderDatabasesWithoutEditColumnsStillRead() throws {
+        // The standard fixture has no edit columns, like chat.db before macOS 13.
+        let h = try Harness()
+        let msgs = h.call("read_chat", ["chat_id": .string(ID.mom)])
+        #expect(!msgs.isError)
+        let list = msgs.json["messages"]?.array ?? []
+        #expect(list.count > 0)
+        #expect(!h.call("search_messages", ["query": "dinner"]).isError)
+    }
 }

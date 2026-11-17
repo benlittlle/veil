@@ -66,6 +66,15 @@ public final class MessagesStore {
         self.home = home
         // Fails fast if the file is unreadable (e.g. missing Full Disk Access).
         try db.query("SELECT 1 FROM chat LIMIT 1")
+        // Edits and unsends (macOS 13 and later). Older databases don't have these columns.
+        let columns = Set(try db.query("PRAGMA table_info(message)").compactMap { $0.str("name") })
+        let edited = columns.contains("date_edited") ? "COALESCE(m.date_edited, 0)" : "0"
+        let retracted = columns.contains("date_retracted") ? "COALESCE(m.date_retracted, 0)" : "0"
+        textColumns = "m.text, m.attributedBody, \(edited) AS edited, \(retracted) AS retracted"
+        messageColumns = """
+            m.ROWID AS id, m.guid, \(textColumns), m.date, m.is_from_me, m.thread_originator_guid,
+            m.cache_has_attachments, h.id AS sender, cmj.chat_id
+            """
     }
 
     /// Changes whenever another connection (Messages) commits to the database. Reads no tables.
@@ -130,7 +139,7 @@ public final class MessagesStore {
         }
         params.append(.int(Int64(limit)))
         return try hydrate(db.query("""
-            SELECT \(Self.messageColumns) FROM message m
+            SELECT \(messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
             WHERE cmj.chat_id IN (\(placeholders(chats.count))) \(window) \(cursor)
@@ -150,7 +159,7 @@ public final class MessagesStore {
         guard !chats.isEmpty else { return nil }
         let (window, windowParams) = Self.window(notBefore)
         return try hydrate(db.query("""
-            SELECT \(Self.messageColumns) FROM message m
+            SELECT \(messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
             WHERE m.guid = ? AND cmj.chat_id IN (\(placeholders(chats.count))) \(window) LIMIT 1
@@ -187,31 +196,30 @@ public final class MessagesStore {
         } }
         // SQLite's LIKE only folds ASCII case, so it's used as a prefilter for ASCII queries only.
         // Rows whose text lives in attributedBody are always decoded and checked here.
+        // Edited messages are always decoded too: their current text is in attributedBody.
         var filter = ""
         if query.allSatisfy(\.isASCII) {
             let like = "%" + query.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
-            filter = "AND (m.text LIKE ? ESCAPE '\\' OR ((m.text IS NULL OR m.text = '') AND m.attributedBody IS NOT NULL))"
+            filter = "AND (m.text LIKE ? ESCAPE '\\' OR ((m.text IS NULL OR m.text = '') AND m.attributedBody IS NOT NULL) OR edited != 0)"
             params.append(.text(like))
         }
         var hits: [Int64] = []
         // EXISTS (with `+` to steer SQLite onto the message_id index) scans messages newest-first
         // and stops as soon as enough hits are found, even with thousands of chats in scope.
         try db.each("""
-            SELECT m.ROWID AS id, m.text, m.attributedBody FROM message m
+            SELECT m.ROWID AS id, \(textColumns) FROM message m
             WHERE EXISTS (SELECT 1 FROM chat_message_join cmj
                           WHERE cmj.message_id = m.ROWID AND (\(clauses.joined(separator: " OR "))))
               AND m.associated_message_type = 0 AND m.item_type = 0 \(filter)
             ORDER BY m.date DESC
             """, params) { r in
-            var text = r.str("text") ?? ""
-            if text.isEmpty, let b = r.blob("attributedBody") { text = AttributedBody.text(from: b) ?? "" }
-            if text.localizedCaseInsensitiveContains(query), let id = r.int("id") { hits.append(id) }
+            if let text = Self.text(r), text.localizedCaseInsensitiveContains(query), let id = r.int("id") { hits.append(id) }
             return hits.count < limit
         }
         guard !hits.isEmpty else { return [] }
         let found = try hydrate(db.query("""
-            SELECT \(Self.messageColumns) FROM message m
+            SELECT \(messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
             WHERE m.ROWID IN (\(placeholders(hits.count))) AND cmj.chat_id IN (\(placeholders(chats.count)))
@@ -267,7 +275,7 @@ public final class MessagesStore {
         guard !chats.isEmpty else { return [] }
         let (window, windowParams) = Self.window(notBefore)
         return try hydrate(db.query("""
-            SELECT \(Self.messageColumns) FROM message m
+            SELECT \(messageColumns) FROM message m
             JOIN message_attachment_join maj ON maj.message_id = m.ROWID
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
@@ -303,14 +311,30 @@ public final class MessagesStore {
 
     // MARK: helpers
 
-    private static let messageColumns = """
-        m.ROWID AS id, m.guid, m.text, m.attributedBody, m.date, m.is_from_me, m.thread_originator_guid,
-        m.cache_has_attachments, h.id AS sender, cmj.chat_id
-        """
+    /// The columns a message's text is worked out from (see `text(_:)`), and every column `hydrate` reads.
+    private let textColumns: String
+    private let messageColumns: String
+
+    /// A message's text as Messages shows it now. An edited message's `text` column can still hold an
+    /// earlier version, so its text comes from `attributedBody` alone (none if that can't be read).
+    /// An unsent message has no text, whatever is left in the row.
+    static func text(_ r: [String: SQLiteDB.Value]) -> String? {
+        guard (r.int("retracted") ?? 0) == 0 else { return nil }
+        var text: String?
+        if (r.int("edited") ?? 0) != 0, let body = r.blob("attributedBody"), !body.isEmpty {
+            text = AttributedBody.text(from: body)
+        } else {
+            text = r.str("text")
+            if text == nil || text!.isEmpty, let body = r.blob("attributedBody") { text = AttributedBody.text(from: body) }
+        }
+        // U+FFFC is the inline placeholder Messages uses for attachments.
+        text = text?.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text?.isEmpty ?? true) ? nil : text
+    }
 
     private func messageByID(_ id: Int64) throws -> Message? {
         try hydrate(db.query("""
-            SELECT \(Self.messageColumns) FROM message m
+            SELECT \(messageColumns) FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID = ? LIMIT 1
             """, [.int(id)])).first
@@ -326,14 +350,10 @@ public final class MessagesStore {
                     JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID WHERE maj.message_id = ?
                     """, [.int(id)]).map(attachmentInfo)
             }
-            var text = r.str("text")
-            if text == nil || text!.isEmpty, let body = r.blob("attributedBody") { text = AttributedBody.text(from: body) }
-            // U+FFFC is the inline placeholder Messages uses for attachments.
-            text = text?.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
             return Message(
                 id: id, guid: r.str("guid") ?? "", chatRowID: r.int("chat_id") ?? 0,
                 date: appleDate(r.int("date") ?? 0), isFromMe: (r.int("is_from_me") ?? 0) != 0,
-                senderHandle: r.str("sender"), text: (text?.isEmpty ?? true) ? nil : text,
+                senderHandle: r.str("sender"), text: Self.text(r),
                 replyToGUID: r.str("thread_originator_guid").flatMap { $0.isEmpty ? nil : $0 },
                 attachments: atts)
         }
