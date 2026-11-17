@@ -48,6 +48,34 @@ struct ReliabilityTests {
         #expect(f.fake.calls.isEmpty)
     }
 
+    // MARK: Watching chat.db
+
+    @Test func watcherPicksUpTheDatabaseOnceItCanBeOpened() async throws {
+        // Before Full Disk Access, the Messages folder can't be opened at all; here it doesn't exist yet.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("veil-watch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("chat.db").path
+        let watcher = DatabaseWatcher(databasePath: path, latency: 0.05)
+        let changes = LockedBox(0)
+        watcher.onChange { changes.set(changes.value + 1) }
+        #expect(!watcher.start())
+        defer { watcher.stop() }
+
+        // Now it can be: starting again watches it, without a relaunch.
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let db = try SQLiteDB(path: path, readOnly: false)
+        try db.query("CREATE TABLE t (x INTEGER)")
+        #expect(watcher.start())
+        let deadline = Date().addingTimeInterval(20)
+        var n = 0
+        while changes.value == 0, Date() < deadline {
+            n += 1
+            try db.query("INSERT INTO t VALUES (?)", [.int(Int64(n))])
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(changes.value > 0)
+    }
+
     // MARK: Failed sends
 
     /// A stand-in for osascript that prints an error and fails. It never reaches Messages.

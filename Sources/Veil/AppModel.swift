@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     /// Wakes the pings, the chat list and the filter when Messages writes to chat.db.
     private let watcher: DatabaseWatcher
     private var changePending = false
+    /// `start()` ran (the watcher is in use; snapshots never start it).
+    private var started = false
     private let webhookKey: KeychainString?
     let supportDir: URL
     let socketPath: String
@@ -419,6 +421,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.databaseChanged() }
         }
         watcher.start()
+        started = true
         webhook.start()
         refreshFullDiskAccess()
         // Content filter: judge new messages in filtered chats ahead of time, on this Mac.
@@ -429,6 +432,8 @@ final class AppModel: ObservableObject {
         // Each step does nothing when nothing changed.
         let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                // Starts watching chat.db if it couldn't before (Full Disk Access granted since launch).
+                self?.watcher.start()
                 self?.reload(); self?.gate.pruneFinishedSends()
                 // Settings requests nobody answered expire; take them off the screen.
                 self?.gate.expireSettingsRequests()
@@ -487,7 +492,12 @@ final class AppModel: ObservableObject {
 
     /// Only real changes are published, so open views don't redraw for nothing.
     private func apply(_ r: LoadResult) {
-        if diskAccessProblem != r.openError { diskAccessProblem = r.openError }
+        if diskAccessProblem != r.openError {
+            // Messages just became readable (Full Disk Access granted): watch it for new messages now,
+            // rather than only on the slow timer.
+            if diskAccessProblem != nil, r.openError == nil, started { watcher.start() }
+            diskAccessProblem = r.openError
+        }
         if readProblem != r.readError { readProblem = r.readError }
         if let c = r.convs, c != conversations { conversations = c }
     }

@@ -29,7 +29,8 @@ public final class DatabaseWatcher {
     public func onChange(_ handler: @escaping () -> Void) { queue.sync { handlers.append(handler) } }
 
     /// Returns false if nothing could be watched (e.g. no Full Disk Access yet); readers then rely
-    /// on their fallback timers. Files that appear later are picked up through the folder.
+    /// on their fallback timers. Files that appear later are picked up through the folder. Safe to call
+    /// again: it watches whatever it couldn't before (say, once Full Disk Access has been granted).
     @discardableResult
     public func start() -> Bool {
         queue.sync {
