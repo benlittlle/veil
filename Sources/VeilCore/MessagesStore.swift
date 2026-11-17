@@ -26,6 +26,9 @@ public struct Conversation: Equatable, Sendable, Identifiable {
         if names.count <= 3 { return names.joined(separator: ", ") }
         return names.prefix(2).joined(separator: ", ") + " & \(names.count - 2) others"
     }
+
+    /// The name as Veil's own prompts, notifications and Activity show it (see `DisplayLabel`).
+    public var safeName: String { DisplayLabel.clean(displayName, max: 60) }
 }
 
 public struct AttachmentInfo: Equatable, Sendable {

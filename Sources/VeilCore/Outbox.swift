@@ -30,6 +30,41 @@ public struct SendRequest: Identifiable, Equatable, Sendable {
     public let created: Date
     public let client: String
     public var status: Status
+    /// Who it goes to, for the prompt: the handle of a one-to-one chat, or "Group: " and the members.
+    /// A group's name is whatever any member typed, so the prompt doesn't rely on it alone.
+    public var recipients: String = ""
+}
+
+/// Text from outside Veil (group names typed by any member, an assistant's name for itself) as Veil shows
+/// it in prompts, notifications and Activity: no control, formatting or direction characters, nothing that
+/// draws nothing, line breaks and runs of spaces folded to one space, no stacks of accents, and short.
+public enum DisplayLabel {
+    public static func clean(_ raw: String, max: Int) -> String {
+        var out = "", pendingSpace = false
+        for ch in raw {
+            if ch.isWhitespace || ch.isNewline { pendingSpace = !out.isEmpty; continue }
+            // A character that only carries hidden parts keeps its visible ones (an emoji keeps its joiners).
+            var keep = String(ch)
+            if Gate.hasHiddenText(keep) {
+                keep = String(String.UnicodeScalarView(ch.unicodeScalars.filter { u in
+                    let p = u.properties
+                    return p.generalCategory != .control && p.generalCategory != .format && !p.isDefaultIgnorableCodePoint
+                }.prefix(Gate.maxScalarsPerCharacter)))
+            }
+            guard !keep.isEmpty else { continue }
+            if pendingSpace { out += " "; pendingSpace = false }
+            out += keep
+        }
+        return out.count > max ? String(out.prefix(max - 1)) + "…" : out
+    }
+
+    /// "Group: Alex Chen, Sam Patel & 3 others", or the handle of a one-to-one chat.
+    public static func recipients(_ c: Conversation) -> String {
+        guard c.isGroup else { return clean(c.participants.first?.handle ?? c.id, max: 60) }
+        let names = c.participants.map { clean($0.label, max: 40) }
+        let shown = names.count <= 4 ? names : Array(names.prefix(3)) + ["\(names.count - 3) others"]
+        return "Group: " + (shown.count > 1 ? shown.dropLast().joined(separator: ", ") + " & " + shown.last! : shown.joined())
+    }
 }
 
 /// Something that can actually deliver a message. Only called after the user approves.

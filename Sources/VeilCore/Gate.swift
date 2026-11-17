@@ -136,7 +136,7 @@ public final class Gate {
 
     /// "End now": every switch off, the same as a time limit running out, but logged as the user's doing.
     public func endSharing(_ chatID: String) throws {
-        let name = (try? conversations())?.first { $0.id == chatID }?.displayName ?? chatID
+        let name = (try? conversations())?.first { $0.id == chatID }?.safeName ?? chatID
         try updateChat(chatID) { a, _ in a = a.allOffKeepingFilter }
         log.append(entry(client: "You", tool: "share_ended", chatID: chatID, chatName: name, .allowed, "You stopped sharing \(name)"))
     }
@@ -170,7 +170,7 @@ public final class Gate {
         var ended: [String] = []
         do { try permissions.update { s in ended = s.lockExpired(now: now) } } catch { return [] }
         guard !ended.isEmpty else { return [] }
-        let names = Dictionary(((try? conversations()) ?? []).map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
+        let names = Dictionary(((try? conversations()) ?? []).map { ($0.id, $0.safeName) }, uniquingKeysWith: { a, _ in a })
         for id in ended {
             purge(chatID: id)
             let name = names[id] ?? id
@@ -761,7 +761,7 @@ public final class Gate {
         case "draft_reply":
             let c = try chat(\.draft, "drafting replies")
             let text = try messageText(args)
-            let d = Draft(id: "d-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.displayName,
+            let d = Draft(id: "d-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.safeName,
                           text: text, created: Date(), client: client)
             lock.lock()
             _drafts.insert(d, at: 0)
@@ -792,8 +792,8 @@ public final class Gate {
                     fallback = "This chat reached its auto-send limit (\(l.count) per \(l.minutes) minutes), so the user needs to approve this one."
                 }
             }
-            let r = SendRequest(id: "s-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.displayName,
-                                text: text, created: Date(), client: client, status: .waiting)
+            let r = SendRequest(id: "s-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.safeName,
+                                text: text, created: Date(), client: client, status: .waiting, recipients: DisplayLabel.recipients(c))
             lock.lock()
             guard _sends.filter({ $0.status == .waiting }).count < 3 else {
                 lock.unlock()
@@ -831,15 +831,15 @@ public final class Gate {
     /// Sends without a prompt. Only reached when the chat has Send and Auto-send on, the kill
     /// switch is off, nothing is paused, and the chat is under its rate limit.
     private func autoSend(_ text: String, to c: Conversation, client: String) -> (ToolResult, String, Conversation?) {
-        let r = SendRequest(id: "s-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.displayName,
-                            text: text, created: Date(), client: client, status: .sending)
+        let r = SendRequest(id: "s-" + UUID().uuidString.prefix(8).lowercased(), chatID: c.id, chatName: c.safeName,
+                            text: text, created: Date(), client: client, status: .sending, recipients: DisplayLabel.recipients(c))
         lock.lock(); _sends.insert(r, at: 0); lock.unlock()
         onOutboxChange?()
         var detail: String?
         do { try sender.send(text, toChatGUID: c.chatGUIDs[0]) } catch { detail = error.localizedDescription }
         let status: SendRequest.Status = detail == nil ? .sent : .failed("Messages couldn't send it.")
         _ = updateSend(r.id, from: .sending, to: status)
-        let rec = AutoSendRecord(date: Date(), chatID: c.id, chatName: c.displayName, text: text, client: client,
+        let rec = AutoSendRecord(date: Date(), chatID: c.id, chatName: c.safeName, text: text, client: client,
                                  outcome: detail == nil ? .sent : .failed, detail: detail)
         autoSends.append(rec)
         onAutoSend?(rec)
@@ -1135,7 +1135,8 @@ public final class Gate {
     }
 
     func entry(client: String, tool: String, chatID: String?, chatName: String?, _ o: LogEntry.Outcome, _ s: String) -> LogEntry {
-        LogEntry(date: Date(), client: client, tool: tool, chatID: chatID, chatName: chatName, outcome: o, summary: s)
+        LogEntry(date: Date(), client: client, tool: tool, chatID: chatID, chatName: chatName.map { DisplayLabel.clean($0, max: 60) },
+                 outcome: o, summary: s)
     }
 
     static func jpeg(_ url: URL) -> Data? {

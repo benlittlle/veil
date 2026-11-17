@@ -149,6 +149,10 @@ struct ApprovalCard: View {
                 Avatar(name: request.chatName, size: compact ? 28 : 36)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Send this to \(request.chatName)?").font(.system(size: compact ? 13 : 15, weight: .semibold))
+                    // Any member can rename a group, so the prompt also says who it really reaches.
+                    if !request.recipients.isEmpty {
+                        Text(request.recipients).font(.system(size: 11, weight: .medium)).lineLimit(2)
+                    }
                     Text("\(model.assistantName) wrote it. Nothing goes out unless you say so.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }

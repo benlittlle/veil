@@ -97,4 +97,34 @@ struct RedTeamTests {
         }
         #expect(h.gate.drafts.count == 10)   // the newest 10 are kept per chat
     }
+
+    // MARK: - What the send prompt says
+
+    /// Any member can rename a group. Renamed to "Mom", with a direction override and line breaks, a group
+    /// the user lets the assistant send to made the prompt read "Send this to Mom?", so a manipulated
+    /// assistant could get private text approved for the wrong people.
+    @Test func sendPromptCantBeSpoofedByAGroupName() throws {
+        let h = try Harness(access: [ID.climbing: ChatAccess(read: true, draft: true, send: true)])
+        let db = try SQLiteDB(path: h.dir.appendingPathComponent("chat.db").path, readOnly: false)
+        let spoof = "Mom\u{202E}\u{2066}\n\n(verified)" + String(repeating: " pad", count: 100)
+        try db.query("UPDATE chat SET display_name = ? WHERE chat_identifier = ?", [.text(spoof), .text(ID.climbing)])
+
+        h.call("request_send", ["chat_id": .string(ID.climbing), "text": "the code is in my notes"])
+        h.call("draft_reply", ["chat_id": .string(ID.climbing), "text": "draft"])
+        let r = try #require(h.gate.sends.first)
+        let d = try #require(h.gate.drafts.first)
+        let logged = try #require(h.gate.log.all.last?.chatName)
+        for name in [r.chatName, d.chatName, logged] {
+            #expect(!name.unicodeScalars.contains { $0.properties.generalCategory == .format || $0.properties.generalCategory == .control })
+            #expect(name.hasPrefix("Mom (verified)"))
+            #expect(name.count <= 60)
+        }
+        // The prompt says who it really goes to.
+        #expect(r.recipients.contains("Alex Chen") && r.recipients.contains("Sam Patel"))
+        #expect(r.recipients.hasPrefix("Group"))
+        // A one-to-one chat shows its handle.
+        let h2 = try Harness()
+        h2.call("request_send", ["chat_id": .string(ID.mom), "text": "hi"])
+        #expect(h2.gate.sends.first?.recipients == ID.mom)
+    }
 }

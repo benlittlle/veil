@@ -71,10 +71,10 @@ extension Gate {
             let widens = change.widens(from: before, in: state, now: now)
             // Anything that makes the content filter show more (codes included) is the user's call too.
             let loosens = codes || change.loosensFilter(from: before, in: state)
-            let caution = codes ? "This lets \(c.displayName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts."
-                : loosens ? "This loosens \(c.displayName)'s content filter, so \(preferences.assistantName) sees more than it does now."
-                : widens ? "This gives \(preferences.assistantName) more of \(c.displayName) than it has now (more history, or more time)." : nil
-            let target = SettingsRequest.Target.chat(id: c.id, name: c.displayName, change: change)
+            let caution = codes ? "This lets \(c.safeName)'s PINs and verification codes through. An assistant that can read one-time codes can sign in to your accounts."
+                : loosens ? "This loosens \(c.safeName)'s content filter, so \(preferences.assistantName) sees more than it does now."
+                : widens ? "This gives \(preferences.assistantName) more of \(c.safeName) than it has now (more history, or more time)." : nil
+            let target = SettingsRequest.Target.chat(id: c.id, name: c.safeName, change: change)
             let direct = mode == .direct && !loosens && !widens && takeDirectChangeSlot()
             if direct {
                 let r = SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client, caution: nil, status: .approved)
@@ -130,7 +130,7 @@ extension Gate {
         var out: [String: JSON] = ["status": "applied", "changes": .array(r.lines.map { .string($0.short) }),
                                    "note": "Applied right away. The user is notified of every change."]
         if let c { out["chat_id"] = .string(c.id) }
-        return (.json(.object(out)), "Changed settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary)", c)
+        return (.json(.object(out)), "Changed settings\(c.map { " for \($0.safeName)" } ?? ""): \(r.shortSummary)", c)
     }
 
     private func ask(_ r: SettingsRequest, _ c: Conversation?, codes: Bool, loosens: Bool = false, widens: Bool = false, overLimit: Bool = false) throws -> (ToolResult, String, Conversation?) {
@@ -152,7 +152,7 @@ extension Gate {
             : overLimit ? "More than \(l.count) changes in \(Int(l.seconds / 60)) minutes need the user's approval. " : ""
         return (.json(["status": "pending", "request_id": .string(r.id), "changes": .array(r.lines.map { .string($0.short) }),
                        "note": .string(why + "The user will see this in Veil and decide. Use check_settings_request to follow up; it expires after \(minutes) minutes.")]),
-                "Asked to change settings\(c.map { " for \($0.displayName)" } ?? ""): \(r.shortSummary) (waiting for approval)", c)
+                "Asked to change settings\(c.map { " for \($0.safeName)" } ?? ""): \(r.shortSummary) (waiting for approval)", c)
     }
 
     // MARK: - Applying (one atomic write each; the same code paths as the app)
