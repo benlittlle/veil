@@ -4,11 +4,13 @@ import Foundation
 /// A stand-in for the on-device model. Judges by keywords, and can be told to fail in every way
 /// the real one can. The default test run never touches the real model.
 final class FakeClassifier: ContentClassifier, @unchecked Sendable {
-    enum Behavior { case normal, error, refuse, hang, slow(TimeInterval), unsure, dropAnswers, unavailable }
+    /// `held`: answers normally, but only once `release()` is called.
+    enum Behavior { case normal, error, refuse, hang, held, unsure, dropAnswers, unavailable }
 
     private let lock = NSLock()
     private var _behavior: Behavior = .normal
     private var _calls: [[ClassifierItem]] = []
+    private var held: [(items: [ClassifierItem], completion: @Sendable (Result<[Int64: ModelVerdict], Error>) -> Void)] = []
     var behavior: Behavior { get { lock.lock(); defer { lock.unlock() }; return _behavior } set { lock.lock(); _behavior = newValue; lock.unlock() } }
     var calls: [[ClassifierItem]] { lock.lock(); defer { lock.unlock() }; return _calls }
     var engineID = "fake/1"
@@ -30,19 +32,27 @@ final class FakeClassifier: ContentClassifier, @unchecked Sendable {
     struct Failure: Error {}
 
     func classify(_ items: [ClassifierItem], completion: @escaping @Sendable (Result<[Int64: ModelVerdict], Error>) -> Void) {
-        lock.lock(); _calls.append(items); let b = _behavior; lock.unlock()
+        lock.lock()
+        _calls.append(items)
+        let b = _behavior
+        if case .held = b { held.append((items, completion)) }
+        lock.unlock()
         switch b {
         case .error, .unavailable: completion(.failure(Failure()))
         case .refuse: completion(.failure(Failure()))     // e.g. a guardrail violation or refusal
         case .hang: return                                // never answers
-        case .slow(let s):
-            let v = judge(items)
-            DispatchQueue.global().asyncAfter(deadline: .now() + s) { completion(.success(v)) }
+        case .held: return                                // answers when released
         case .unsure:
             completion(.success(Dictionary(uniqueKeysWithValues: items.map { ($0.id, ModelVerdict(Dictionary(uniqueKeysWithValues: FilterCategory.modelCategories.map { ($0, ConcernLevel.unsure) }))) })))
         case .dropAnswers: completion(.success([:]))
         case .normal: completion(.success(judge(items)))
         }
+    }
+
+    /// Answers everything held back so far, and answers normally from now on.
+    func release() {
+        lock.lock(); let waiting = held; held = []; _behavior = .normal; lock.unlock()
+        for w in waiting { w.completion(.success(judge(w.items))) }
     }
 
     func judge(_ items: [ClassifierItem]) -> [Int64: ModelVerdict] {
@@ -78,6 +88,9 @@ final class FilterHarness {
          recognizer: TextRecognizer? = VisionTextRecognizer(), nudity: NudityDetector? = nil) throws {
         let a = access ?? Harness.defaultAccess.merging([ID.alex: ChatAccess(read: true, waiting: true, draft: true, filtered: true)]) { $1 }
         h = try Harness(access: a, classifier: classifier ? fake : nil, imageClassifier: imageClassifier, recognizer: recognizer, nudity: nudity)
+        // Requests wait as long as the fake model takes, so a busy machine can't turn a clean message into
+        // a withheld one. The fail-closed tests set their own short timeouts.
+        h.gate.filter.onDemandTimeout = 30
         db = try SQLiteDB(path: h.dir.appendingPathComponent("chat.db").path, readOnly: false)
         // Oldest first. Alex's existing messages are 20h and 6h old; these are newer.
         try add("card", "My card is 4111 1111 1111 1111 exp 12/27", hoursAgo: 5.0)

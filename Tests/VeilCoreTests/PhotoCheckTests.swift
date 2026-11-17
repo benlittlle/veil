@@ -11,10 +11,12 @@ import UniformTypeIdentifiers
 /// Stand-in for the on-device image model. Judges by a photo's average colour, and can fail in
 /// every way the real one can.
 final class FakeImageClassifier: ImageClassifier, @unchecked Sendable {
-    enum Behavior { case normal, error, refuse, hang, unsure, partial, unavailable }
+    /// `held`: answers normally, but only once `release()` is called.
+    enum Behavior { case normal, error, refuse, hang, held, unsure, partial, unavailable }
     private let lock = NSLock()
     private var _behavior: Behavior = .normal
     private var _calls = 0
+    private var held: [(image: CGImage, completion: @Sendable (Result<ModelVerdict, Error>) -> Void)] = []
     var behavior: Behavior { get { lock.lock(); defer { lock.unlock() }; return _behavior } set { lock.lock(); _behavior = newValue; lock.unlock() } }
     var calls: Int { lock.lock(); defer { lock.unlock() }; return _calls }
     var engineID = "fake-image/1"
@@ -31,15 +33,25 @@ final class FakeImageClassifier: ImageClassifier, @unchecked Sendable {
     }
 
     func classify(_ image: CGImage, completion: @escaping @Sendable (Result<ModelVerdict, Error>) -> Void) {
-        lock.lock(); _calls += 1; let b = _behavior; lock.unlock()
+        lock.lock()
+        _calls += 1
+        let b = _behavior
+        if b == .held { held.append((image, completion)) }
+        lock.unlock()
         switch b {
         case .normal: completion(.success(Self.judge(image)))
         case .error, .unavailable: completion(.failure(FakeClassifier.Failure()))
         case .refuse: completion(.failure(ImageCheckRefused()))
-        case .hang: return
+        case .hang, .held: return
         case .unsure: completion(.success(ModelVerdict(Dictionary(uniqueKeysWithValues: ModelVerdict.clearPhoto.levels.keys.map { ($0, ConcernLevel.unsure) }))))
         case .partial: completion(.success(ModelVerdict([.paymentCards: .none, .idDocuments: .none])))
         }
+    }
+
+    /// Answers everything held back so far, and answers normally from now on.
+    func release() {
+        lock.lock(); let waiting = held; held = []; _behavior = .normal; lock.unlock()
+        for w in waiting { w.completion(.success(Self.judge(w.image))) }
     }
 }
 
@@ -84,14 +96,18 @@ final class PhotoHarness {
     init(access: [String: ChatAccess] = PhotoHarness.momFiltered, recognizer: TextRecognizer? = FakeRecognizer(),
          nudity: NudityDetector? = nil, imageEngine: Bool = true) throws {
         f = try FilterHarness(access: access, imageClassifier: imageEngine ? image : nil, recognizer: recognizer, nudity: nudity)
-        f.gate.photos.modelTimeout = 3
-        f.gate.photos.onDemandTimeout = 5
+        // Background checks run at utility priority, which a busy Mac can starve for seconds. Waiting as
+        // long as the fakes take keeps these tests about what is decided, not how fast. The tests for
+        // timeouts set their own short ones.
+        f.gate.photos.modelTimeout = Self.patient
+        f.gate.photos.onDemandTimeout = Self.patient
     }
 
     static func solid(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, size: Int = 64) -> CGImage {
         let c = PhotoFixtures.Canvas(size, size, bg: (r, g, b)); return c.image
     }
     static let red = solid(1, 0, 0), green = solid(0.2, 0.7, 0.3), purple = solid(0.7, 0, 0.7)
+    static let patient: TimeInterval = 30
 
     /// Adds a message carrying one attachment. Returns the attachment id.
     @discardableResult
@@ -133,11 +149,14 @@ struct PhotoCheckSharingTests {
         let p = try PhotoHarness()
         #expect(p.gate.permissions.state.filterPolicy(for: ID.mom)?.attachments == .check)
         // Not checked yet: left out, and checked in the background. Never refused outright.
+        p.image.behavior = .held                       // the background check can't finish before the asserts below
         let first = p.call("list_attachments", ["chat_id": .string(ID.mom)])
         #expect(!first.isError)
         #expect(first.json["note"]?.string?.contains("on-device check") == true)
         #expect(!p.readMom().contains("garden.png"))
         // Asking for it waits for the check, then returns the image.
+        let image = p.image
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { image.release() }
         let photo = p.get(1)
         #expect(!photo.isError)
         #expect(photo.result.content.contains { $0["type"]?.string == "image" })
@@ -179,7 +198,7 @@ struct PhotoCheckSharingTests {
         let a = p.get(pending)
         p.image.behavior = .normal
         let flagged = try p.addPhoto("b", PhotoFixtures.encode(PhotoHarness.red, as: .png))
-        p.gate.photos.onDemandTimeout = 5; p.gate.photos.modelTimeout = 3
+        p.gate.photos.onDemandTimeout = PhotoHarness.patient; p.gate.photos.modelTimeout = PhotoHarness.patient
         let b = p.get(flagged)
         #expect(a.isError && b.isError && a.text == b.text)
         #expect(!p.listed().contains(pending) && !p.listed().contains(flagged))
@@ -229,7 +248,7 @@ struct PhotoCheckSharingTests {
         let p = try PhotoHarness()
         try p.addPhoto("view", PhotoFixtures.encode(PhotoHarness.green, as: .png))
         p.gate.warmFilterCache()
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(30)
         while p.gate.photos.cachedCount < 2 && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         #expect(p.gate.photos.cachedCount >= 2)
         // Requests now find them without waiting.

@@ -280,7 +280,7 @@ struct HistoryTests {
         // Arrived (or synced) with a time from before the chat was shared: never announced.
         try p.incoming(chatRow: 1, text: "Older news", date: Date().addingTimeInterval(-600))
         p.notifier.tick()
-        await p.settle { !p.transport.requests.isEmpty }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
         let fresh = try p.incoming(chatRow: 1, text: "Fresh news", date: Date().addingTimeInterval(1))
         p.notifier.tick()
@@ -314,7 +314,8 @@ struct HistoryTests {
             let info = try #require(try store.attachment(id: id))
             return p.gate.photos.cached(PhotoChecker.Request(id: id, url: try #require(store.safeFileURL(for: info)))) != nil
         }
-        for _ in 0..<300 where !(try cached(1)) { try await Task.sleep(nanoseconds: 10_000_000) }
+        let deadline = Date().addingTimeInterval(30)
+        while !(try cached(1)), Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
         try await Task.sleep(nanoseconds: 100_000_000)
         #expect(try cached(1))
         #expect(try !cached(5))              // 10 days old: never checked

@@ -316,15 +316,21 @@ struct FilterFailClosedTests {
 
     @Test func lateAnswersAreCachedForNextTime() async throws {
         let f = try FilterHarness()
-        f.fake.behavior = .slow(0.4)
-        f.gate.filter.onDemandTimeout = 0.05
+        f.fake.behavior = .held                        // no answer arrives until the request has given up
+        f.gate.filter.onDemandTimeout = 1
         #expect(f.text(of: "ordinary") == "[withheld]")
-        // The two batches already in flight finish after the request gave up, and are kept.
-        for _ in 0..<100 where f.gate.filter.cachedCount < 16 { try await Task.sleep(nanoseconds: 20_000_000) }
+        #expect(f.gate.filter.cachedCount == 0)
+        // The batches already in flight (two at most) finish after the request gave up, and are kept.
+        f.fake.release()
+        let deadline = Date().addingTimeInterval(30)
+        while f.gate.filter.cachedCount < f.fake.calls.flatMap({ $0 }).count, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         let cached = f.gate.filter.cachedCount
-        #expect(cached >= 16)
+        #expect(cached == f.fake.calls.flatMap { $0 }.count)
+        #expect(cached >= 8 && cached < 17)
         let before = f.fake.calls.flatMap { $0 }.count
-        f.gate.filter.onDemandTimeout = 2
+        f.gate.filter.onDemandTimeout = 30
         #expect(f.text(of: "ordinary") == FilterHarness.ordinary)
         #expect(f.fake.calls.flatMap { $0 }.count - before == 17 - cached)
     }
