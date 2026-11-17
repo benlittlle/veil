@@ -214,17 +214,19 @@ struct ActivityPingTests {
         try p.incoming(chatRow: 5, fromMe: true)
         try p.incoming(chatRow: 7, fromMe: true)
         p.notifier.tick()
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
     @Test func turningActivityOffBeforeDeliveryDropsThePing() async throws {
-        let p = try PingHarness(access: ActivityTests.access, retryDelays: [0.2])
+        let p = try PingHarness(access: ActivityTests.access)
         p.transport.responses = [(503, nil), (200, nil)]
+        p.transport.holding = true                     // the 503 only arrives once Activity is off
         try p.incoming(chatRow: 7)
         p.notifier.tick()
-        await p.settle { p.transport.requests.count >= 1 }
+        #expect(p.transport.requests.count == 1)
         try p.h.gate.setAccess(ChatAccess(), for: ID.family)
+        p.transport.release()
         await p.settle { p.notifier.log.all.contains { $0.outcome == .dropped } }
         #expect(p.transport.requests.count == 1)
         #expect(p.notifier.log.all.contains { $0.outcome == .dropped && $0.chatID == ID.family })

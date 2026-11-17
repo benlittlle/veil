@@ -3,10 +3,13 @@ import Testing
 @testable import VeilCore
 
 /// Records requests instead of using the network. `responses` are used in order; the last repeats.
+/// While `holding`, answers wait until `release()`, so a test can act between a request and its answer.
 final class FakeTransport: WebhookTransport {
     private let lock = NSLock()
     private var _requests: [URLRequest] = []
+    private var held: [() -> Void] = []
     var responses: [(Int?, Error?)] = [(200, nil)]
+    var holding = false
     var requests: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _requests }
 
     func post(_ request: URLRequest, completion: @escaping (Int?, Error?) -> Void) {
@@ -14,8 +17,16 @@ final class FakeTransport: WebhookTransport {
         let i = _requests.count
         _requests.append(request)
         let r = responses[min(i, responses.count - 1)]
+        let answer = { completion(r.0, r.1) }
+        if holding { held.append(answer); lock.unlock(); return }
         lock.unlock()
-        DispatchQueue.global().async { completion(r.0, r.1) }
+        DispatchQueue.global().async(execute: answer)
+    }
+
+    /// Delivers the answers held so far, and answers straight away from now on.
+    func release() {
+        lock.lock(); let waiting = held; held = []; holding = false; lock.unlock()
+        for a in waiting { DispatchQueue.global().async(execute: a) }
     }
 }
 
@@ -56,11 +67,17 @@ final class PingHarness {
         transport.requests.compactMap { $0.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } }
     }
 
-    /// Waits for async deliveries and retries to land.
+    /// Waits for async deliveries and retries to land, then a moment longer to catch anything extra.
+    /// The limit is generous so a busy machine can't fail a test; a passing test never waits for it.
     func settle(until done: () -> Bool) async {
-        for _ in 0..<200 where !done() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let deadline = Date().addingTimeInterval(20)
+        while !done(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
         try? await Task.sleep(nanoseconds: 50_000_000)
     }
+
+    /// For checks that nothing is sent. A ping is handed to the transport inside `tick` itself, so
+    /// this only gives a stray retry a chance to show up.
+    func settle() async { try? await Task.sleep(nanoseconds: 200_000_000) }
 }
 
 @Suite("New-message pings")
@@ -107,7 +124,7 @@ struct WebhookTests {
     @Test func backlogIsNeverAnnounced() async throws {
         let p = try PingHarness()
         p.notifier.tick()
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
@@ -122,7 +139,7 @@ struct WebhookTests {
         let newest = try p.incoming(chatRow: 1)
         p.notifier.tick(now: t0.addingTimeInterval(5))
         p.notifier.tick(now: t0.addingTimeInterval(30))
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.count == 1)
         p.notifier.tick(now: t0.addingTimeInterval(61))
         await p.settle { p.transport.requests.count >= 2 }
@@ -140,7 +157,7 @@ struct WebhookTests {
         p.notifier.tick(now: t0.addingTimeInterval(10))   // queued for the end of the quiet minute
         try p.h.gate.setAccess(ChatAccess(waiting: true), for: ID.mom)
         p.notifier.tick(now: t0.addingTimeInterval(61))
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.count == 1)
         #expect(p.notifier.log.all.contains { $0.outcome == .dropped && $0.chatID == ID.mom })
     }
@@ -155,7 +172,7 @@ struct WebhookTests {
         try p.h.gate.setPaused(true)
         try p.incoming(chatRow: 6)
         p.notifier.tick()
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
@@ -171,7 +188,7 @@ struct WebhookTests {
         n.tick()
         try p.incoming(chatRow: 1)
         n.tick()
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
@@ -179,7 +196,7 @@ struct WebhookTests {
         let p = try PingHarness()
         try p.incoming(chatRow: 1, date: Date().addingTimeInterval(-3 * 86400))
         p.notifier.tick()
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
@@ -190,7 +207,7 @@ struct WebhookTests {
         p.notifier.tick()
         p.notifier.configure(WebhookConfig(url: URL(string: "https://hooks.example.com")!, headerName: "Authorization", key: "k"))
         p.notifier.tick()   // new baseline: the message that arrived while off is not announced
-        await p.settle { false }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 

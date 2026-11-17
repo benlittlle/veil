@@ -43,14 +43,30 @@ struct ChangeTests {
         #expect(f.gate.filter.cachedCount == 17)
     }
 
+    /// The watcher's kernel sources are registered in the background after `start`, on a low-priority
+    /// queue. Makes harmless writes until it reports one, so the change a test is about can't land
+    /// before it's watching.
+    func waitUntilWatching(_ p: PingHarness, _ changes: LockedBox<Int>) async throws {
+        let before = changes.value
+        let deadline = Date().addingTimeInterval(20)
+        var n = 0
+        while changes.value == before, Date() < deadline {
+            n += 1
+            try p.db.query("PRAGMA user_version = \(n)")
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try #require(changes.value > before, "the watcher never reported a change")
+    }
+
     @Test func pingsFollowFileEvents() async throws {
         let p = try PingHarness()
         let watcher = DatabaseWatcher(databasePath: p.h.dir.appendingPathComponent("chat.db").path, latency: 0.05)
-        watcher.onChange { p.notifier.poke() }
+        let changes = LockedBox(0)
+        watcher.onChange { changes.set(changes.value + 1); p.notifier.poke() }
         #expect(watcher.start())
         p.notifier.start(fallback: 3600)               // only a file event can wake it in time
         defer { p.notifier.stop(); watcher.stop() }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitUntilWatching(p, changes)
         try p.incoming(chatRow: 1)
         await p.settle { p.transport.requests.count >= 1 }
         #expect(p.transport.requests.count == 1)
@@ -66,11 +82,12 @@ struct ChangeTests {
         p.notifier.tick()
         await p.settle { p.transport.requests.count >= 1 }
         let watcher = DatabaseWatcher(databasePath: p.h.dir.appendingPathComponent("chat.db").path, latency: 0.05)
-        watcher.onChange { p.notifier.poke() }
+        let changes = LockedBox(0)
+        watcher.onChange { changes.set(changes.value + 1); p.notifier.poke() }
         #expect(watcher.start())
         p.notifier.start(fallback: 3600)
         defer { p.notifier.stop(); watcher.stop() }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitUntilWatching(p, changes)
         try p.incoming(chatRow: 6)
         await p.settle { p.transport.requests.count >= 2 }
         #expect(p.transport.requests.count == 2)

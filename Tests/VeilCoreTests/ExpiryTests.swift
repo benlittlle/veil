@@ -121,7 +121,7 @@ struct ExpiryTests {
         try p.h.gate.permissions.update { $0.chats[ID.mom]?.expires = Date().addingTimeInterval(-1) }
         try p.incoming(chatRow: 1)
         p.notifier.tick()
-        await p.settle { !p.transport.requests.isEmpty }
+        await p.settle()
         #expect(p.transport.requests.isEmpty)
     }
 
