@@ -127,4 +127,54 @@ struct RedTeamTests {
         h2.call("request_send", ["chat_id": .string(ID.mom), "text": "hi"])
         #expect(h2.gate.sends.first?.recipients == ID.mom)
     }
+
+    // MARK: - Approving a settings request
+
+    /// A request only lists what would change when it's made. A value that already matched was left off the
+    /// prompt, but still applied on Allow, even if the user had changed it in between. Here the assistant
+    /// asks for Send plus "codes: allow" while codes are allowed; the prompt says only "Send on". The user
+    /// then hides codes, clicks Allow for Send, and codes were quietly let through again.
+    @Test func allowAppliesOnlyWhatThePromptShowed() throws {
+        let h = try Harness()
+        try h.gate.setFiltered(true, for: ID.climbing)
+        var p = FilterPolicy.standard; p.set(.codes, .allow)
+        try h.gate.setChatFilterPolicy(p, for: ID.climbing)
+        try h.gate.setAgentSettings(.ask)
+
+        let out = h.call("change_chat_settings", ["chat_id": .string(ID.climbing), "send": true,
+                                                  "filter": ["categories": ["codes": "allow"]]]).json
+        let id = try #require(out["request_id"]?.string)
+        #expect(out["changes"] == ["Send with your OK on"])
+
+        p.set(.codes, .withhold)
+        try h.gate.setChatFilterPolicy(p, for: ID.climbing)
+        h.gate.approveSettings(id)
+        #expect(h.gate.permissions.state.filterPolicy(for: ID.climbing)?.action(.codes) == .withhold)
+        #expect(!h.gate.permissions.state.access(ID.climbing).send)
+        #expect(h.gate.settingsRequests.first { $0.id == id }?.status.label == "cancelled")
+    }
+
+    /// The same for app settings: the user stopped every auto-send after the request was made.
+    @Test func allowDoesntUndoTheKillSwitch() throws {
+        let h = try Harness()
+        try h.gate.setAgentSettings(.ask)
+        let out = h.call("change_app_settings", ["auto_send": true, "assistant_name": "Helper"]).json
+        let id = try #require(out["request_id"]?.string)
+        #expect(out["changes"] == ["Assistant name: “Helper”"])
+        try h.gate.setAutoSendStopped(true)
+        h.gate.approveSettings(id)
+        #expect(h.gate.permissions.state.autoSendStopped)
+        #expect(h.gate.preferences.assistantName != "Helper")
+    }
+
+    @Test func allowStillWorksWhenNothingElseChanged() throws {
+        let h = try Harness()
+        try h.gate.setAgentSettings(.ask)
+        let id = try #require(h.call("change_chat_settings", ["chat_id": .string(ID.climbing), "send": true]).json["request_id"]?.string)
+        let app = try #require(h.call("change_app_settings", ["auto_send": true, "assistant_name": "Helper"]).json["request_id"]?.string)
+        h.gate.approveSettings(id)
+        h.gate.approveSettings(app)
+        #expect(h.gate.permissions.state.access(ID.climbing).send)
+        #expect(h.gate.preferences.assistantName == "Helper")
+    }
 }

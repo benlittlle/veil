@@ -78,7 +78,15 @@ extension Gate {
             let direct = mode == .direct && !loosens && !widens && takeDirectChangeSlot()
             if direct {
                 let r = SettingsRequest(id: newSettingsID(), target: target, lines: lines, created: Date(), client: client, caution: nil, status: .approved)
-                do { try applyChat(c.id, change, markReviewed: false) }
+                // Judged again on the live settings as they're written, so a change made in between can't
+                // turn this into a loosening that skips the user.
+                do {
+                    try applyChat(c.id, change, markReviewed: false) { a, s, now in
+                        if change.allowsCodes(from: a, in: s) || change.loosensFilter(from: a, in: s) || change.widens(from: a, in: s, now: now) {
+                            throw SettingsError("The settings changed while this was being applied. Nothing was changed; ask again.")
+                        }
+                    }
+                }
                 catch let e as SettingsError { throw invalid(e, c) }
                 catch { throw Denied(message: "Veil couldn't save that change. Nothing was changed.", chat: c, summary: "Couldn't save a settings change: \(error.localizedDescription)") }
                 return applied(r, c)
@@ -157,10 +165,17 @@ extension Gate {
 
     // MARK: - Applying (one atomic write each; the same code paths as the app)
 
-    func applyChat(_ chatID: String, _ change: ChatSettingsChange, markReviewed: Bool) throws {
+    /// `check` sees the chat and the settings as they are at the moment of writing, and can refuse (nothing changes).
+    func applyChat(_ chatID: String, _ change: ChatSettingsChange, markReviewed: Bool,
+                   check: ((ChatAccess, PermissionState, Date) throws -> Void)? = nil) throws {
         let now = clock()
-        try updateChat(chatID, markReviewed: markReviewed, now: now) { a, s in a = try change.applied(to: a, in: s, now: now) }
+        try updateChat(chatID, markReviewed: markReviewed, now: now) { a, s in
+            try check?(a, s, now)
+            a = try change.applied(to: a, in: s, now: now)
+        }
     }
+
+    static let changedSinceAsked = "the settings changed since the request was made, so it would now change more than you were shown"
 
     func applyApp(_ c: AppSettingsChange) throws {
         if c.paused != nil || c.autoSendAllowed != nil || c.autoSendLimit != nil {
@@ -194,8 +209,19 @@ extension Gate {
                 guard let convs = try? conversations(), convs.contains(where: { $0.id == chatID }), !state.access(chatID).hidden else {
                     return fail("that chat isn't available any more")
                 }
-                try applyChat(chatID, change, markReviewed: true)
+                // Only what the prompt showed: a value that matched when the request came in (so it wasn't
+                // listed) but no longer does would otherwise change without the user having seen it.
+                let shown = Set(r.lines.map(\.short))
+                try applyChat(chatID, change, markReviewed: true) { a, s, now in
+                    guard change.lines(from: a, in: s, now: now).allSatisfy({ shown.contains($0.short) }) else {
+                        throw SettingsError(Self.changedSinceAsked)
+                    }
+                }
             case .app(let change):
+                let shown = Set(r.lines.map(\.short))
+                guard change.lines(state: state, prefs: preferences).allSatisfy({ shown.contains($0.short) }) else {
+                    return fail(Self.changedSinceAsked)
+                }
                 try applyApp(change)
             }
         } catch let e as SettingsError {
