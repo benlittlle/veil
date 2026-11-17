@@ -500,6 +500,8 @@ public final class Gate {
 
     public func call(tool: String, arguments: JSON, client: String) -> ToolResult {
         let args = arguments
+        // Every name Veil knows is short, so a long one is just unknown; cut it before it's echoed or logged.
+        let tool = tool.count <= 64 ? tool : String(tool.prefix(40)) + "…"
         // Time limits are checked on every request, timer or not: ended shares are locked (and purged and
         // logged) first, and the snapshot below treats them as locked even if that write failed.
         let now = clock()
@@ -620,6 +622,8 @@ public final class Gate {
             guard let q = args["query"]?.string?.trimmingCharacters(in: .whitespaces), q.count >= 2 else {
                 throw Denied(message: "Give a query of at least 2 characters.")
             }
+            // The query is logged as typed, so it's kept to a sensible length.
+            guard q.count <= 500 else { throw Denied(message: "Give a query of at most 500 characters.") }
             var scope = convs.filter { state.access($0.id).read }
             if args["chat_id"]?.string != nil { scope = [try chat(\.read, "reading")] }
             let byRow = Dictionary(scope.flatMap { c in c.chatRowIDs.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
@@ -1134,9 +1138,12 @@ public final class Gate {
                 (a.activity, "activity"), (a.filtered && a.anyEnabled, "content_filter")].filter(\.0).map(\.1)
     }
 
+    /// Parts of an entry come from the assistant (its name, a search query) or from other people (group names),
+    /// so each is cleaned and kept short: one line in Activity, a bounded size in memory and on disk.
     func entry(client: String, tool: String, chatID: String?, chatName: String?, _ o: LogEntry.Outcome, _ s: String) -> LogEntry {
-        LogEntry(date: Date(), client: client, tool: tool, chatID: chatID, chatName: chatName.map { DisplayLabel.clean($0, max: 60) },
-                 outcome: o, summary: s)
+        LogEntry(date: Date(), client: DisplayLabel.clean(client, max: 60), tool: DisplayLabel.clean(tool, max: 64),
+                 chatID: chatID.map { DisplayLabel.clean($0, max: 120) }, chatName: chatName.map { DisplayLabel.clean($0, max: 60) },
+                 outcome: o, summary: DisplayLabel.clean(s, max: 400))
     }
 
     static func jpeg(_ url: URL) -> Data? {

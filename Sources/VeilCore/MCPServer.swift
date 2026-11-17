@@ -105,11 +105,9 @@ public final class MCPServer {
 
     /// The client picks its own name, so treat it as untrusted: printable, short, and never "You".
     static func clientLabel(_ raw: String) -> String {
-        let clean = String(raw.unicodeScalars.filter { !$0.properties.isWhitespace || $0 == " " }
-            .filter { $0.properties.generalCategory != .control && $0.properties.generalCategory != .format }
-            .map(Character.init)).trimmingCharacters(in: .whitespaces)
+        let clean = DisplayLabel.clean(raw, max: 40)
         let reserved = ["you", "me", "user", "owner", "veil", ""]
-        return reserved.contains(clean.lowercased()) ? "Unknown assistant" : String(clean.prefix(40))
+        return reserved.contains(clean.lowercased()) ? "Unknown assistant" : clean
     }
 
     static let instructions = """

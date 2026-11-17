@@ -400,7 +400,7 @@ enum SettingsArgs {
             let cat = u.properties.generalCategory
             return cat == .control || cat == .format || cat == .lineSeparator || cat == .paragraphSeparator
                 || (u.properties.isWhitespace && u != " ")
-        }
+        } || Gate.hasHiddenText(s)
         guard !s.isEmpty, s.count <= 30, !bad else {
             throw SettingsError("assistant_name must be 1–30 characters of plain text on one line.")
         }
