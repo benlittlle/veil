@@ -197,9 +197,14 @@ struct HistoryTests {
         let alex = try #require(chats.first { $0["chat_id"]?.string == ID.alex })
         #expect(alex["last_activity"] != nil)
         #expect(alex["history"]?.string == "This chat shares the last 24 hours only.")
-        // Mom sorts by name with the chats that show no activity, so the order can't hint at when she last wrote.
-        let names = chats.filter { $0["last_activity"] == nil }.compactMap { $0["name"]?.string }
-        #expect(names == names.sorted { $0.lowercased() < $1.lowercased() } && names.contains("Mom"))
+        // Mom sorts by name with the chats that show no activity (those with access come before locked ones),
+        // so the order can't hint at when she last wrote.
+        let quiet = chats.filter { $0["last_activity"] == nil }
+        let open = quiet.filter { $0["allowed"]?.array?.isEmpty == false }.compactMap { $0["name"]?.string }
+        let locked = quiet.filter { $0["allowed"]?.array?.isEmpty != false }.compactMap { $0["name"]?.string }
+        #expect(open == open.sorted { $0.lowercased() < $1.lowercased() } && open.contains("Mom"))
+        #expect(locked == locked.sorted { $0.lowercased() < $1.lowercased() })
+        #expect(quiet.compactMap { $0["name"]?.string } == open + locked)
     }
 
     @Test func sharedAttachmentsNeedEveryChatsWindowToIncludeThem() throws {

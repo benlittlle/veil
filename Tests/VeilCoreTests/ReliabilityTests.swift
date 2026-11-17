@@ -67,6 +67,36 @@ struct ReliabilityTests {
         #expect(ids.allSatisfy { loaded.isReviewed($0) == s.isReviewed($0) })
     }
 
+    @Test func listChatsStaysUsableWithThousandsOfChats() throws {
+        // Draft-only: has access but shares no activity, so it isn't ordered by time.
+        var access = Harness.defaultAccess
+        access["+15550199999"] = ChatAccess(draft: true)
+        let h = try Harness(access: access)
+        let db = try SQLiteDB(path: h.dir.appendingPathComponent("chat.db").path, readOnly: false)
+        try db.query("BEGIN")
+        for i in 0..<2000 {
+            let handle = "+1444\(String(format: "%07d", i))"
+            try db.query("INSERT INTO chat VALUES (?, ?, 45, ?, 'iMessage', NULL)", [.int(Int64(1000 + i)), .text("iMessage;-;\(handle)"), .text(handle)])
+        }
+        try db.query("COMMIT")
+
+        let out = h.call("list_chats").json
+        let ids = (out["chats"]?.array ?? []).compactMap { $0["chat_id"]?.string }
+        // Every chat with access is listed, ahead of the locked ones.
+        let withAccess = [ID.mom, ID.alex, ID.climbing, ID.unknown]
+        #expect(Set(ids.prefix(withAccess.count)) == Set(withAccess))
+        #expect(ids.count == withAccess.count + Gate.maxLockedListed)
+        let locked = 2000 + 2   // the new ones, the therapist and the family group
+        #expect(out["more_locked_chats"]?.int == locked - Gate.maxLockedListed)
+        #expect(out["note"]?.string?.contains("query") == true)
+        // A query still finds a locked chat that wasn't listed.
+        let found = h.call("list_chats", ["query": "+14440001999"]).json["chats"]?.array ?? []
+        #expect(found.count == 1)
+        // Few chats: nothing is cut and nothing extra is said.
+        let small = try Harness().call("list_chats").json
+        #expect(small["more_locked_chats"] == nil && small["note"] == nil)
+    }
+
     @Test func aBurstBiggerThanOnePageIsPingedInOneLook() async throws {
         let p = try PingHarness()
         try p.db.query("BEGIN")

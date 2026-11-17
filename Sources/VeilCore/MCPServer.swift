@@ -224,7 +224,7 @@ public final class MCPServer {
 
     static let tools: [JSON] = [
         tool("list_chats", "List chats",
-             "Lists the user's conversations with what you're allowed to do in each. Locked chats show only name and number.",
+             "Lists the user's conversations with what you're allowed to do in each, chats you can use first. Locked chats show only name and number, and at most 200 of them are listed; use query to find others.",
              ["query": ["type": "string", "description": "Optional filter by name, number or email."]]),
         tool("read_chat", "Read a chat",
              "Returns messages from one chat, oldest to newest. Needs 'read' access. Pass older_messages_cursor as before_message_id to page back through full history.",

@@ -597,8 +597,13 @@ public final class Gate {
             }
             let visibleLast = { (c: Conversation) -> Date? in lastShown[c.id] }
             let byName = { (x: Conversation, y: Conversation) in (x.displayName.lowercased(), x.id) < (y.displayName.lowercased(), y.id) }
+            // Then the other chats with access, then locked ones. With thousands of chats, listing every locked
+            // one would swamp the assistant, so only the first ones by name are listed and the rest counted.
+            let locked = shown.filter { !state.access($0.id).anyEnabled }.sorted(by: byName)
             let ordered = shown.filter { visibleLast($0) != nil }.sorted { (visibleLast($0)!, $0.id) > (visibleLast($1)!, $1.id) }
-                + shown.filter { visibleLast($0) == nil }.sorted(by: byName)
+                + shown.filter { visibleLast($0) == nil && state.access($0.id).anyEnabled }.sorted(by: byName)
+                + locked.prefix(Self.maxLockedListed)
+            let unlisted = max(0, locked.count - Self.maxLockedListed)
             let items: [JSON] = ordered.map { c in
                 let a = state.access(c.id)
                 var o: [String: JSON] = [
@@ -611,8 +616,13 @@ public final class Gate {
                 else if let n = historyNote(c) { o["history"] = .string(n) }
                 return .object(o)
             }
-            let open = shown.filter { state.access($0.id).anyEnabled }.count
-            return (.json(["chats": .array(items)]), "Listed \(shown.count) chats (\(open) with access)", nil)
+            let open = shown.count - locked.count
+            var out: [String: JSON] = ["chats": .array(items)]
+            if unlisted > 0 {
+                out["more_locked_chats"] = JSON(unlisted)
+                out["note"] = .string("\(unlisted) more locked chats aren't listed. Pass query to find one by name, number or email.")
+            }
+            return (.json(.object(out)), "Listed \(items.count) chats (\(open) with access)", nil)
 
         case "read_chat":
             let c = try chat(\.read, "reading")
@@ -1002,6 +1012,9 @@ public final class Gate {
         if visible.count < m.attachments.count { o["attachments_hidden"] = JSON(m.attachments.count - visible.count) }
         return .object(o)
     }
+
+    /// Most locked chats one list_chats answer lists (chats with access are always all listed).
+    static let maxLockedListed = 200
 
     /// How far search widens in filtered chats before giving up (raw matches).
     static let maxRawSearch = 5000

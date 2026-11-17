@@ -18,7 +18,7 @@ Every chat (including group chats and unknown numbers) has its own switches. All
 | Filter sensitive content | Off by default. When on, card numbers, codes, passwords and topics you choose are masked or withheld on this Mac before any of the above returns content, and each photo is checked before it's shared. See *Content filter* | all content tools |
 | Hide this chat | The assistant can't even see that the chat exists | — |
 
-With everything off, the assistant sees only the chat's name and number (or group name and members) in `list_chats`. Only you change these switches, unless you let the assistant ask for changes (see *Letting the assistant change settings*).
+With everything off, the assistant sees only the chat's name and number (or group name and members) in `list_chats`. `list_chats` lists chats it can use first; after those it lists at most 200 locked chats (by name) and says how many more there are, so it can find the rest with its `query`. Only you change these switches, unless you let the assistant ask for changes (see *Letting the assistant change settings*).
 
 Under the switches, two more settings decide how far back the assistant can read and how long the chat stays shared. See *History and time limits*.
 
