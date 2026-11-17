@@ -225,4 +225,18 @@ struct RedTeamTests {
         let replies = try socketExchange(h, ["1", "\"x\"", #"{"jsonrpc":"2.0","id":9,"method":"ping"}"#], replies: 1)
         #expect(replies.first?.contains(#""id":9"#) == true)
     }
+
+    /// The folder holding the socket must be private even if it already existed with looser permissions.
+    @Test func socketFolderIsPrivate() throws {
+        let h = try Harness()
+        let dir = "/tmp/veil-dir-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let sock = UnixSocketServer(path: dir + "/mcp.sock", server: h.server)
+        try sock.start(); defer { sock.stop() }
+        let dirMode = try FileManager.default.attributesOfItem(atPath: dir)[.posixPermissions] as? Int
+        let sockMode = try FileManager.default.attributesOfItem(atPath: dir + "/mcp.sock")[.posixPermissions] as? Int
+        #expect(dirMode == 0o700)
+        #expect(sockMode == 0o600)
+    }
 }

@@ -13,6 +13,12 @@ public final class UnixSocketServer {
     public func start() throws {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // An existing folder keeps its own permissions, so make ours private before binding in it. (A shared
+        // folder such as /tmp, used by tests, is left alone: the socket's mode and the peer check still apply.)
+        var st = stat()
+        if stat(dir, &st) == 0, st.st_uid == geteuid(), st.st_mode & 0o077 != 0, chmod(dir, 0o700) != 0 {
+            throw SocketError("Veil couldn't make the folder for its socket private.")
+        }
         if Self.canConnect(path) { throw SocketError("Veil is already running.") }
         unlink(path)
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -32,6 +38,9 @@ public final class UnixSocketServer {
     private func serve(_ c: Int32) {
         var nosig: Int32 = 1
         setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
+        // Only processes running as this user (the folder and socket modes say the same).
+        var uid = uid_t(), gid = gid_t()
+        guard getpeereid(c, &uid, &gid) == 0, uid == geteuid() else { close(c); return }
         let session = server.makeSession(transport: .relay)
         defer { session.close(); close(c) }
         var buffer = Data()
