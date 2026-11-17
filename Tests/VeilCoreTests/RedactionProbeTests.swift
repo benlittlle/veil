@@ -13,6 +13,13 @@ private func masked(_ s: String) -> String {
 }
 private func categories(_ s: String) -> Set<FilterCategory> { Set(Detectors.scan(s).map(\.category)) }
 
+/// CPU time this thread has used. Unlike the wall clock, it doesn't grow when the machine is busy.
+private func threadCPUSeconds() -> Double {
+    var t = timespec()
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
+    return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
+}
+
 /// Appends the check digit that makes `partial` pass the card checksum.
 private func luhnComplete(_ partial: String) -> String {
     let digits = partial.compactMap(\.wholeNumberValue)
@@ -287,9 +294,9 @@ struct RedactionProbeDetectorRegressions {
             (String(repeating: "password: ", count: 20_000), "keywords"),
         ]
         for (s, what) in cases {
-            let start = Date()
+            let start = threadCPUSeconds()
             let out = masked(s)
-            #expect(Date().timeIntervalSince(start) < 30, "\(what) took too long")
+            #expect(threadCPUSeconds() - start < 30, "\(what) took too long")
             if what == "codes" { #expect(!out.contains("1234")) }
             if what == "cards+emoji" { #expect(!out.contains("4111")) }
             if what == "token" { #expect(out == "[removed]") }

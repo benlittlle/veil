@@ -58,13 +58,23 @@ struct RobustnessTests {
             _ = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
             close(fd)
         }
-        usleep(200_000)
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0); defer { close(fd) }
-        var addr = try UnixSocketServer.address(path)
-        #expect(withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } } == 0)
-        writeAll(fd, Data((#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n").utf8))
-        var buf = [UInt8](repeating: 0, count: 4096)
-        #expect(read(fd, &buf, buf.count) > 0)
+        // The server clears the hung-up connections at its own pace: while its listen queue is full or
+        // it's at its connection cap, a new client is turned away. Once it has caught up it must answer.
+        func ping() throws -> Bool {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0); defer { close(fd) }
+            var nosig: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
+            var addr = try UnixSocketServer.address(path)
+            guard withUnsafePointer(to: &addr, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }) == 0 else { return false }
+            writeAll(fd, Data((#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n").utf8))
+            var buf = [UInt8](repeating: 0, count: 4096)
+            let n = read(fd, &buf, buf.count)
+            return n > 0 && String(decoding: buf[0..<n], as: UTF8.self).contains(#""id":1"#)
+        }
+        let deadline = Date().addingTimeInterval(20)
+        var answered = try ping()
+        while !answered, Date() < deadline { usleep(50_000); answered = try ping() }
+        #expect(answered, "the server stopped answering after abrupt clients")
     }
 
     @Test func draftsAreCapped() throws {

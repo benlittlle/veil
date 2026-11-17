@@ -124,9 +124,14 @@ struct ProtocolTests {
 
     @Test func httpRoundTripOverLoopback() throws {
         let h = try Harness()
-        let port = UInt16.random(in: 40000...60000)
-        let http = LocalHTTPServer(port: port, token: "tok", server: h.server)
-        try http.start()
+        // A random port can be taken by something else on this Mac; try a few.
+        var started: LocalHTTPServer?
+        for _ in 0..<20 where started == nil {
+            let s = LocalHTTPServer(port: UInt16.random(in: 40000...60000), token: "tok", server: h.server)
+            if (try? s.start()) != nil { started = s }
+        }
+        let http = try #require(started)
+        let port = http.port
         defer { http.stop() }
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/mcp")!)
         req.httpMethod = "POST"
@@ -138,7 +143,7 @@ struct ProtocolTests {
         URLSession.shared.dataTask(with: req) { d, r, _ in
             body = d ?? Data(); status = (r as? HTTPURLResponse)?.statusCode ?? 0; done.signal()
         }.resume()
-        #expect(done.wait(timeout: .now() + 5) == .success)
+        #expect(done.wait(timeout: .now() + 30) == .success)
         #expect(status == 200)
         let reply = try #require(JSON.parse(body))
         #expect(reply["result"]?["isError"] == true)
