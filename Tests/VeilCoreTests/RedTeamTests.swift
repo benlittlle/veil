@@ -15,6 +15,7 @@ struct RedTeamTests {
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
         var tv = timeval(tv_sec: 10, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var addr = try UnixSocketServer.address(path)
         let rc = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
         try #require(rc == 0)
@@ -211,5 +212,17 @@ struct RedTeamTests {
         #expect(MCPServer.clientLabel(selectors) == "Bob")
         #expect(MCPServer.clientLabel("Claude Desktop") == "Claude Desktop")
         #expect(try SettingsArgs.assistantName("Helper 🤖") == "Helper 🤖")
+    }
+
+    // MARK: - The socket
+
+    /// A line that wasn't a request and had no id (a bare number, say) was answered with a JSON `null`, which
+    /// the relay passed on to the assistant as if it were a message.
+    @Test func nonRequestsGetNoReply() throws {
+        let h = try Harness()
+        #expect(h.server.makeSession().handle(1) == nil)
+        #expect(h.server.makeSession().handle(["jsonrpc": "2.0"]) == nil)
+        let replies = try socketExchange(h, ["1", "\"x\"", #"{"jsonrpc":"2.0","id":9,"method":"ping"}"#], replies: 1)
+        #expect(replies.first?.contains(#""id":9"#) == true)
     }
 }

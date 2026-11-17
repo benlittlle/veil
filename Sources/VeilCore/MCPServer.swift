@@ -66,7 +66,9 @@ public final class MCPServer {
             return replies.isEmpty ? nil : .array(replies)
         }
         guard let method = msg["method"]?.string else {
-            return msg["id"] == nil ? nil : error(msg["id"], -32600, "Invalid request")
+            // No id means nothing to answer. (A bare `nil` in the ternary became JSON null, which was sent.)
+            guard let id = msg["id"] else { return nil }
+            return error(id, -32600, "Invalid request")
         }
         let id = msg["id"]
         let params = msg["params"] ?? [:]
