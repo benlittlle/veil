@@ -30,6 +30,9 @@ struct MenuBarView: View {
             if let r = model.waitingSends.first {
                 ApprovalCard(request: r, compact: true)
             }
+            if let r = model.failedSends.first {
+                FailedSendCard(request: r, compact: true)
+            }
 
             if !model.drafts.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -197,9 +200,50 @@ struct ApprovalPanelView: View {
             SettingsApprovalCard(request: r).frame(width: 400)
         } else if let r = model.waitingSends.last {
             ApprovalCard(request: r).frame(width: 400)
+        } else if let r = model.failedSends.first {
+            FailedSendCard(request: r).frame(width: 400)
         } else {
             Color.clear.frame(width: 400, height: 1)
         }
+    }
+}
+
+/// A message Messages didn't take. Says why, and keeps the text so it can be sent by hand.
+struct FailedSendCard: View {
+    @EnvironmentObject var model: AppModel
+    let request: SendRequest
+    var compact = false
+    @State private var copied = false
+
+    private var reason: String {
+        if case .failed(let why) = request.status { return why }
+        return ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.caution)
+                    .font(.system(size: compact ? 13 : 15))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Couldn't send to \(request.chatName)").font(.system(size: compact ? 13 : 15, weight: .semibold))
+                    Text(reason).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text(request.text).font(.system(size: 12)).foregroundStyle(.secondary)
+                .lineLimit(compact ? 2 : 4).textSelection(.enabled)
+            HStack(spacing: 8) {
+                Spacer()
+                if reason == AppleScriptSender.notAllowed {
+                    Button("Open Settings") { AppModel.openPrivacy("Privacy_Automation") }.buttonStyle(QuietButtonStyle())
+                }
+                Button("Dismiss") { model.dismissFailure(request.id) }.buttonStyle(QuietButtonStyle())
+                Button(copied ? "Copied" : "Copy text") { model.copy(request.text); copied = true }.buttonStyle(PrimaryButtonStyle())
+            }
+        }
+        .padding(compact ? 12 : 20)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(compact ? Theme.caution.opacity(0.35) : .clear, lineWidth: 1))
     }
 }
 

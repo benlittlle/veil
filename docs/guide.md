@@ -55,7 +55,7 @@ Assistants on the local web address can't be checked this way; Veil says "can't 
 
 - **Chats**: searchable list grouped into *Shared with …* (your assistant's name), *New* and *Private*. Pick a chat to flip its switches. Changes apply on the next request. The top right of each chat's page shows where it stands: *Shared* (with the time left, if it has a time limit), *Private* or *Hidden*.
 - **New chats** stay locked until you choose; *Keep all private* clears the badge without sharing anything.
-- **Send prompts** float in the top-right corner (and show in the menu bar). *Send* goes through Messages; *Don't send* tells the assistant you declined (`check_send_status` returns `declined`).
+- **Send prompts** float in the top-right corner (and show in the menu bar). *Send* goes through Messages; *Don't send* tells the assistant you declined (`check_send_status` returns `declined`). If Messages doesn't take a message (most often because macOS hasn't let Veil control Messages: *System Settings → Privacy & Security → Automation*), the prompt comes back saying why, with the text to copy and send yourself; the assistant gets the same reason from `check_send_status`.
 - **Drafts** appear in the menu bar with *Copy* and *Discard*.
 - **Pause everything** (menu bar or sidebar) blocks every tool immediately and cancels waiting sends.
 - **Activity** shows every request: time, action, chat, and a short summary of what was returned (never message text). Once more than one assistant has connected, each row also names the assistant. Filter to *Blocked* to see refusals.

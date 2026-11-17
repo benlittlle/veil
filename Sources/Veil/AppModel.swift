@@ -706,7 +706,8 @@ final class AppModel: ObservableObject {
     }
 
     private func updateGlyph() {
-        let style: VeilGlyph.Style = state.paused ? .paused : (waitingSends.isEmpty && waitingSettings.isEmpty ? .normal : .attention)
+        let quiet = waitingSends.isEmpty && waitingSettings.isEmpty && failedSends.isEmpty
+        let style: VeilGlyph.Style = state.paused ? .paused : (quiet ? .normal : .attention)
         if glyph.style != style { glyph.style = style }
     }
 
@@ -722,9 +723,22 @@ final class AppModel: ObservableObject {
         let gate = self.gate
         DispatchQueue.global(qos: .userInitiated).async {
             gate.approve(id)
-            Task { @MainActor in self.syncOutbox() }
+            Task { @MainActor in
+                self.syncOutbox()
+                // The prompt is gone by now, so say so if Messages didn't take it.
+                if self.failedSends.contains(where: { $0.id == id }) { self.onSendFailed?() }
+            }
         }
     }
+
+    /// Sends that Messages didn't take (approved or auto-sent), until the user dismisses them or
+    /// they're forgotten after an hour. The text stays here so it can be copied and sent by hand.
+    var failedSends: [SendRequest] {
+        sends.filter { if case .failed = $0.status { return !dismissedFailures.contains($0.id) }; return false }
+    }
+    @Published private var dismissedFailures: Set<String> = [] { didSet { updateGlyph() } }
+    var onSendFailed: (() -> Void)?
+    func dismissFailure(_ id: String) { dismissedFailures.insert(id) }
     func decline(_ id: String) { gate.decline(id); syncOutbox() }
     func discardDraft(_ id: String) { gate.discardDraft(id); syncOutbox() }
 

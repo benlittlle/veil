@@ -47,6 +47,7 @@ struct MenuBarIcon: View {
         MainActor.assumeIsolated {
             model.onSendRequested = { [weak self] _ in self?.showApproval() }
             model.onSettingsRequested = { [weak self] _ in self?.showApproval() }
+            model.onSendFailed = { [weak self] in self?.showApproval() }
             model.start()
             if !args.contains("--demo") { Updates.shared.start() }
             // First run, or something needs attention: open the window.
@@ -114,11 +115,12 @@ struct MenuBarIcon: View {
             h.sizingOptions = [.preferredContentSize]
             p.contentView = h
             panel = p
-            // Close the panel automatically once nothing is waiting.
-            panelCloser = model.$sends.map { _ in () }.merge(with: model.$settingsRequests.map { _ in () })
+            // Close the panel automatically once nothing is waiting (or left to dismiss).
+            panelCloser = model.objectWillChange
                 .receive(on: DispatchQueue.main).sink { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty, self.model.waitingSettings.isEmpty else { return }
+                    guard let self, let p = self.panel, p.isVisible, self.model.waitingSends.isEmpty, self.model.waitingSettings.isEmpty,
+                          self.model.failedSends.isEmpty else { return }
                     p.orderOut(nil)
                 }
             }

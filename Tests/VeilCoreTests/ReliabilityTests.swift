@@ -48,6 +48,52 @@ struct ReliabilityTests {
         #expect(f.fake.calls.isEmpty)
     }
 
+    // MARK: Failed sends
+
+    /// A stand-in for osascript that prints an error and fails. It never reaches Messages.
+    func fakeOsascript(_ stderr: String, in dir: URL) throws -> URL {
+        let url = dir.appendingPathComponent("osascript-\(UUID().uuidString.prefix(6))")
+        let quoted = stderr.replacingOccurrences(of: "'", with: "'\\''")
+        try Data("#!/bin/sh\nprintf '%s\\n' '\(quoted)' >&2\nexit 1\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url
+    }
+
+    @Test func failedSendsSayWhatToDoAndNeverEchoTheMessage() throws {
+        let h = try Harness()
+        let cases: [(String, String)] = [
+            ("0:91: execution error: Not authorized to send Apple events to Messages. (-1743)", AppleScriptSender.notAllowed),
+            ("0:91: execution error: Messages got an error: Can't get chat id \"iMessage;-;+15550100001\". (-1728)", "couldn't find this chat"),
+            ("0:91: execution error: Messages got an error: AppleEvent timed out. (-1712)", "can't tell whether it went out"),
+            ("0:91: execution error: Can't make \"SECRET plan for Saturday\" into type text. (-1700)", "(error -1700)"),
+            ("something unexpected about SECRET", "Messages couldn't send it."),
+        ]
+        for (stderr, expected) in cases {
+            let sender = AppleScriptSender(osascript: try fakeOsascript(stderr, in: h.dir))
+            #expect(throws: (any Error).self) { try sender.send("SECRET plan for Saturday", toChatGUID: "iMessage;-;+15550100001") }
+            do { try sender.send("SECRET plan for Saturday", toChatGUID: "iMessage;-;+15550100001") } catch {
+                let reason = error.localizedDescription
+                #expect(reason.contains(expected), "\(reason)")
+                #expect(!reason.contains("SECRET") && !reason.contains("+1555"), "\(reason)")
+            }
+        }
+    }
+
+    @Test func anApprovedSendThatFailsIsReportedPlainly() throws {
+        let h = try Harness()
+        let sender = AppleScriptSender(osascript: try fakeOsascript("execution error: Not authorized to send Apple events to Messages. (-1743)", in: h.dir))
+        let gate = Gate(permissions: h.gate.permissions, log: AccessLog(url: nil), contacts: StaticContacts(DemoData.contacts),
+                        sender: sender, openStore: { try h.gate.messagesStore() })
+        let req = Harness.Out(result: gate.call(tool: "request_send", arguments: ["chat_id": .string(ID.mom), "text": "SECRET see you soon"], client: "t"))
+        let id = try #require(req.json["request_id"]?.string)
+        gate.approve(id)
+        #expect(gate.sends.first?.status == .failed(AppleScriptSender.notAllowed))
+        let status = Harness.Out(result: gate.call(tool: "check_send_status", arguments: ["request_id": .string(id)], client: "t")).text
+        #expect(status.contains("Automation") && !status.contains("SECRET"))
+        #expect(gate.log.all.contains { $0.outcome == .failed && $0.summary.contains("Automation") })
+        #expect(!gate.log.all.contains { $0.summary.contains("SECRET") })
+    }
+
     // MARK: Edited and unsent messages
 
     /// Adds the edit and unsend columns newer chat.db files have, and messages to Mom's chat (row 1).

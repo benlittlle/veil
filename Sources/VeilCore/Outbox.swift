@@ -75,7 +75,10 @@ public protocol MessageSender: AnyObject {
 /// Sends through Messages.app with AppleScript. Text and chat id are passed as
 /// arguments (never spliced into the script), so message text can't inject code.
 public final class AppleScriptSender: MessageSender {
-    public init() {}
+    private let osascript: URL
+    /// `osascript` is only replaced in tests, with a stand-in that never reaches Messages.
+    public init(osascript: URL = URL(fileURLWithPath: "/usr/bin/osascript")) { self.osascript = osascript }
+
     public func send(_ text: String, toChatGUID guid: String) throws {
         let script = """
         on run argv
@@ -83,14 +86,33 @@ public final class AppleScriptSender: MessageSender {
         end run
         """
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.executableURL = osascript
         p.arguments = ["-e", script, text, guid]
-        let err = Pipe(); p.standardError = err; p.standardOutput = Pipe()
-        try p.run(); p.waitUntilExit()
+        let err = Pipe(); p.standardError = err; p.standardOutput = FileHandle.nullDevice
+        try p.run()
+        // Read before waiting, so a long error can't fill the pipe and stall both sides.
+        let output = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         guard p.terminationStatus == 0 else {
-            let msg = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             throw NSError(domain: "Veil", code: Int(p.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: msg.isEmpty ? "Messages couldn't send it." : msg])
+                          userInfo: [NSLocalizedDescriptionKey: Self.failureReason(String(decoding: output, as: UTF8.self))])
+        }
+    }
+
+    /// Shown when macOS hasn't let Veil control Messages (the user said no, or never answered).
+    public static let notAllowed = "Veil isn't allowed to control Messages. Turn on Messages under Veil in System Settings → Privacy & Security → Automation, then try again."
+
+    /// What went wrong, in plain words, from osascript's error output. That output can quote the chat id or
+    /// the message itself, and this goes to Activity and to the assistant, so only the error number is kept.
+    public static func failureReason(_ stderr: String) -> String {
+        let code = stderr.range(of: #"\((-?[0-9]+)\)\s*$"#, options: .regularExpression)
+            .map { String(stderr[$0].filter { $0 == "-" || $0.isNumber }) }
+        if code == "-1743" || stderr.contains("Not authorized to send Apple events") { return notAllowed }
+        switch code {
+        case "-1728": return "Messages couldn't find this chat. Open it in Messages once, then try again."
+        case "-1712": return "Messages didn't answer in time, so Veil can't tell whether it went out. Check the chat in Messages before trying again."
+        case let c?: return "Messages couldn't send it (error \(c))."
+        case nil: return "Messages couldn't send it."
         }
     }
 }
