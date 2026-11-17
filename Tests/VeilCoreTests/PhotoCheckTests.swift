@@ -170,6 +170,21 @@ struct PhotoCheckSharingTests {
         #expect(!p.listed().contains(3))
     }
 
+    @Test func askingForAPhotoDoesntWaitOnStalledBackgroundChecks() throws {
+        let p = try PhotoHarness()
+        // Background checks a busy Mac hasn't got round to: handed to a queue, never started.
+        let stalled = DispatchQueue(label: "stalled background checks")
+        stalled.suspend()
+        defer { stalled.resume() }
+        p.gate.photos.backgroundQueue = stalled
+        #expect(!p.listed().contains(1))               // queues every photo in the chat in the background
+        #expect(p.image.calls == 0)
+        let photo = p.get(1)
+        #expect(!photo.isError)
+        #expect(photo.result.content.contains { $0["type"]?.string == "image" })
+        #expect(p.listed().contains(1))
+    }
+
     @Test func flaggedPhotosNeverLeave() throws {
         let p = try PhotoHarness()
         let card = try p.addPhoto("bank-card", PhotoFixtures.encode(PhotoHarness.red, as: .png))

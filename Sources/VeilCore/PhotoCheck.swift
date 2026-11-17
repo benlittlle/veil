@@ -133,6 +133,9 @@ public final class PhotoChecker: @unchecked Sendable {
     public var retryAfter: TimeInterval = 300
     static let maxRunning = 2
     static let maxQueued = 400
+    /// Where checks run. Background work gets a low priority, which a busy Mac may not get to for a while.
+    var backgroundQueue = DispatchQueue.global(qos: .utility)
+    var urgentQueue = DispatchQueue.global(qos: .userInitiated)
 
     private let lock = NSLock()
     private var cache: [String: PhotoVerdict] = [:]
@@ -283,6 +286,9 @@ public final class PhotoChecker: @unchecked Sendable {
         let key: String
         let request: Request
         var urgent: Bool
+        /// Handed to a queue (it counts as running), but not picked up by a thread yet.
+        var dispatched = false
+        var started = false
         var waiters: [() -> Void] = []
         init(key: String, request: Request, urgent: Bool) { self.key = key; self.request = request; self.urgent = urgent }
     }
@@ -295,7 +301,10 @@ public final class PhotoChecker: @unchecked Sendable {
                 queued.remove(at: i); j.urgent = true
                 queued.insert(j, at: queued.firstIndex { !$0.urgent } ?? queued.count)
             }
-            lock.unlock(); return
+            let boost = urgent ? waitingToStart() : []
+            lock.unlock()
+            boost.forEach { dispatch($0, urgent: true) }
+            return
         }
         // Background work doesn't hammer a photo that just failed; a request asking for it does retry.
         if !urgent, let f = failedAt[key], Date().timeIntervalSince(f) < retryAfter { lock.unlock(); onDone(); return }
@@ -304,28 +313,50 @@ public final class PhotoChecker: @unchecked Sendable {
         j.waiters.append(onDone)
         jobs[key] = j
         if urgent { queued.insert(j, at: queued.firstIndex { !$0.urgent } ?? queued.count) } else { queued.append(j) }
+        let boost = urgent ? waitingToStart() : []
         lock.unlock()
+        boost.forEach { dispatch($0, urgent: true) }
         pump()
+    }
+
+    /// Background jobs holding a running slot that no thread has picked up yet. An urgent request waits
+    /// for them (it may be one of them, or queued behind them), so they're handed to the urgent queue
+    /// too, and whichever copy starts first does the work. Call with the lock held.
+    private func waitingToStart() -> [Job] {
+        jobs.values.filter { $0.dispatched && !$0.started && !$0.urgent }.map { $0.urgent = true; return $0 }
     }
 
     private func pump() {
         lock.lock()
         var start: [Job] = []
-        while running < Self.maxRunning, !queued.isEmpty { start.append(queued.removeFirst()); running += 1 }
-        lock.unlock()
-        for j in start {
-            DispatchQueue.global(qos: j.urgent ? .userInitiated : .utility).async { [self] in
-                let result = analyze(j.request)
-                lock.lock()
-                if let (key, v) = result { store(v, for: key); failedAt[j.key] = nil } else { failedAt[j.key] = Date() }
-                jobs[j.key] = nil
-                running -= 1
-                let waiters = j.waiters
-                lock.unlock()
-                waiters.forEach { $0() }
-                pump()
-            }
+        while running < Self.maxRunning, !queued.isEmpty {
+            let j = queued.removeFirst()
+            j.dispatched = true
+            start.append(j); running += 1
         }
+        lock.unlock()
+        for j in start { dispatch(j, urgent: j.urgent) }
+    }
+
+    private func dispatch(_ j: Job, urgent: Bool) {
+        (urgent ? urgentQueue : backgroundQueue).async { [self] in run(j) }
+    }
+
+    /// Runs a job once, however many queues it was handed to.
+    private func run(_ j: Job) {
+        lock.lock()
+        guard !j.started else { lock.unlock(); return }
+        j.started = true
+        lock.unlock()
+        let result = analyze(j.request)
+        lock.lock()
+        if let (key, v) = result { store(v, for: key); failedAt[j.key] = nil } else { failedAt[j.key] = Date() }
+        jobs[j.key] = nil
+        running -= 1
+        let waiters = j.waiters
+        lock.unlock()
+        waiters.forEach { $0() }
+        pump()
     }
 
     // MARK: Analysis
