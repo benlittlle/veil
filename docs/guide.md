@@ -184,7 +184,7 @@ The switch only appears once *Send* is on. Turning *Send* off also turns auto-se
 
 - A `request_send` to that chat is sent immediately, with no prompt. It returns `status: "sent"` (or `failed: …`), and `check_send_status` agrees.
 - **Rate limit:** 5 messages per chat per 10 minutes by default. Change it under *Settings → Auto-send*. Anything over the limit gets the normal approval prompt. The count survives restarts, and clearing the history doesn't reset it.
-- **Plain text only.** A request with anything besides `chat_id` and `text` (for example an attachment) gets the approval prompt. The usual text rules still apply: 2000 characters, no invisible or direction-changing characters.
+- **Plain text only.** A request with anything besides `chat_id` and `text` (for example an attachment) gets the approval prompt. The usual text rules still apply: 2000 characters, 20 line breaks, no invisible or direction-changing characters, and no Unicode line or paragraph separators.
 - **History:** *Activity → Auto-sent* lists every auto-sent message with chat, time, full text and result. It's stored in `~/Library/Application Support/Veil/auto-sent.jsonl` (mode 0600, last 500).
 - **Notification:** after each auto-send, macOS shows the chat and text. Turn this off under *Settings → Auto-send → Notify me*. macOS asks once to allow notifications.
 - **Kill switch:** the *Auto-send* switch in the menu bar (also *Settings → Allow auto-send*) stops auto-send for every chat at once. Your per-chat choices are kept for when you switch it back on. *Pause everything* also stops it.

@@ -1092,6 +1092,9 @@ public final class Gate {
             (s.properties.generalCategory == .control && s != "\n" && s != "\t") || s.properties.generalCategory == .format && s != "\u{200D}"
         }
         guard !hidden else { throw Denied(message: "That message contains invisible formatting characters. Use plain text.") }
+        // Unicode line and paragraph separators break lines like \n does, so they'd slip past the limit below.
+        let separators = t.unicodeScalars.contains { [.lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory) }
+        guard !separators else { throw Denied(message: "That message contains special line or paragraph separators. Use ordinary line breaks.") }
         guard t.filter({ $0 == "\n" }).count <= 20, !t.contains("\n\n\n") else {
             throw Denied(message: "That message has too many line breaks.")
         }

@@ -33,7 +33,10 @@ struct ReviewRegressionTests {
     @Test func sendTextCannotHideContent() throws {
         let h = try Harness()
         for t in ["Sounds good" + String(repeating: "\n", count: 200) + "hidden", "abc\u{202E}gnp.exe", "zero\u{200B}width",
-                  String(repeating: "x", count: 2001), "a\n\n\nb"] {
+                  String(repeating: "x", count: 2001), "a\n\n\nb",
+                  // Unicode line and paragraph separators break lines too, in the prompt and in Messages.
+                  "Sounds good" + String(repeating: "\u{2028}", count: 200) + "hidden",
+                  "Sounds good" + String(repeating: "\u{2029}", count: 200) + "hidden", "a\u{2028}b"] {
             #expect(h.call("request_send", ["chat_id": .string(ID.mom), "text": .string(t)]).isError, "accepted: \(t.prefix(20))")
         }
         #expect(!h.call("request_send", ["chat_id": .string(ID.mom), "text": "On my way 👩‍👩‍👧 see you\nsoon"]).isError)
