@@ -84,6 +84,8 @@ final class AppModel: ObservableObject {
     /// A permission change couldn't be saved; shown as an alert.
     @Published var saveError: String?
     private var reloading = false
+    /// A reload was asked for while one was running (Messages may have written since it started).
+    private var reloadAgain = false
     @Published var httpError: String?
 
     /// Demo and snapshot runs keep their own settings, so trying the demo never changes the real app's.
@@ -469,12 +471,17 @@ final class AppModel: ObservableObject {
             if SystemContacts.isAuthorized { reloadContacts() }
         }
         // Database work happens off the main thread so the UI never stalls.
-        guard !reloading else { return }
+        // One at a time; a request that arrives meanwhile runs once more afterwards, so a change Messages
+        // wrote after this load started isn't left for the slow timer.
+        guard !reloading else { reloadAgain = true; return }
         reloading = true
         let gate = self.gate
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Self.load(gate)
-            Task { @MainActor in self.reloading = false; self.apply(result) }
+            Task { @MainActor in
+                self.reloading = false; self.apply(result)
+                if self.reloadAgain { self.reloadAgain = false; self.reload() }
+            }
         }
     }
 
