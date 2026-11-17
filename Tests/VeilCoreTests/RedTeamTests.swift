@@ -267,4 +267,41 @@ struct RedTeamTests {
         #expect(n > 0 && String(decoding: buf[0..<max(n, 0)], as: UTF8.self).hasPrefix("HTTP/1.1 401"))
         #expect(Date().timeIntervalSince(start) < 3)
     }
+
+    // MARK: - Decompression bombs
+
+    /// A PNG of `width` × `height` black pixels at 1 bit each: a few hundred KB on disk, gigabytes once decoded.
+    static func hugePNG(width: Int, height: Int) throws -> Data {
+        func be(_ v: UInt32) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+        func chunk(_ type: String, _ body: Data) -> Data {
+            let t = Data(type.utf8)
+            return be(UInt32(body.count)) + t + body + be(crc32(t + body))
+        }
+        func crc32(_ d: Data) -> UInt32 {
+            var c: UInt32 = 0xFFFF_FFFF
+            for b in d { c ^= UInt32(b); for _ in 0..<8 { c = (c >> 1) ^ (0xEDB8_8320 & (0 &- (c & 1))) } }
+            return ~c
+        }
+        let raw = Data(count: height * (1 + (width + 7) / 8))   // filter byte 0 and zero pixels on every row
+        let deflated = try (raw as NSData).compressed(using: .zlib) as Data
+        var a: UInt32 = 1, b: UInt32 = 0
+        for byte in raw { a = (a + UInt32(byte)) % 65521; b = (b + a) % 65521 }
+        let zlib = Data([0x78, 0x01]) + deflated + be(b << 16 | a)
+        var ihdr = be(UInt32(width)) + be(UInt32(height)); ihdr.append(contentsOf: [1, 0, 0, 0, 0])
+        return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + chunk("IHDR", ihdr) + chunk("IDAT", zlib) + chunk("IEND", Data())
+    }
+
+    /// Photos from chats without a photo check were decoded whatever their size. A texter can send a tiny PNG
+    /// that decodes to gigabytes (30000 × 30000 took about 900 MB and over a second), and the assistant can
+    /// ask for it many times at once until macOS kills Veil. Bigger than the photo check's limit is refused.
+    @Test func decompressionBombsArentDecoded() throws {
+        let bomb = try Self.hugePNG(width: 12_000, height: 11_000)   // 132 million pixels, over the 120 million limit
+        #expect(bomb.count < 1_000_000)
+        #expect(Gate.jpeg(bomb) == nil)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("veil-bomb-\(UUID().uuidString).png")
+        try bomb.write(to: url); defer { try? FileManager.default.removeItem(at: url) }
+        #expect(Gate.jpeg(url) == nil)
+        // An ordinary photo still converts.
+        #expect(Gate.jpeg(try Self.hugePNG(width: 400, height: 300)) != nil)
+    }
 }

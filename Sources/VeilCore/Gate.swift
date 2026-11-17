@@ -348,7 +348,7 @@ public final class Gate {
         guard let store = try? messagesStore(), let c = try? conversations().first(where: { $0.id == chatID }),
               let rows = try? Set(store.chatRowIDs(forAttachment: attachmentID)), !rows.isDisjoint(with: c.chatRowIDs),
               let info = try? store.attachment(id: attachmentID), let url = store.safeFileURL(for: info),
-              let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+              let src = CGImageSourceCreateWithURL(url as CFURL, nil), Self.decodable(src) else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixels] as CFDictionary)
@@ -1156,8 +1156,17 @@ public final class Gate {
         return jpeg(src)
     }
 
+    /// Refuses images over the photo check's pixel limit before decoding anything: a small file can declare
+    /// a picture that takes gigabytes to decode.
+    static func decodable(_ src: CGImageSource) -> Bool {
+        guard CGImageSourceGetCount(src) > 0, let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int,
+              w > 0, h > 0 else { return false }
+        return w <= PhotoChecker.maxPixels && h <= PhotoChecker.maxPixels && w * h <= PhotoChecker.maxPixels
+    }
+
     private static func jpeg(_ src: CGImageSource) -> Data? {
-        guard let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+        guard decodable(src), let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: 1600] as CFDictionary) else { return nil }
         let out = NSMutableData()
