@@ -123,8 +123,20 @@ public final class ClientCheckStore: @unchecked Sendable {
 
     public var bypassing: [ClientCheck] { all.filter(\.canBypass) }
 
+    /// At most this many are remembered. Names come from the clients, so without a cap a client could grow
+    /// the list (and the file) without end. The oldest go first, warnings last.
+    public static let limit = 30
+
     public func record(_ c: ClientCheck) {
-        lock.lock(); checks[c.name] = c; let list = Array(checks.values); lock.unlock()
+        lock.lock()
+        checks[c.name] = c
+        if checks.count > Self.limit {
+            let drop = checks.values.sorted { ($0.canBypass ? 1 : 0, $0.lastSeen) < ($1.canBypass ? 1 : 0, $1.lastSeen) }
+                .filter { $0.name != c.name }.prefix(checks.count - Self.limit)
+            for d in drop { checks[d.name] = nil }
+        }
+        let list = Array(checks.values)
+        lock.unlock()
         save(list); onChange?()
     }
 

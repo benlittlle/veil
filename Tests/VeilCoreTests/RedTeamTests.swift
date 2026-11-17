@@ -327,4 +327,28 @@ struct RedTeamTests {
         let read = h.call("read_chat", ["chat_id": .string(ID.climbing)]).json
         #expect(crew["last_activity"] == read["messages"]?.array?.last?["time"])
     }
+
+    // MARK: - Remembered assistants
+
+    /// Every name an assistant gave itself was remembered (and the file rewritten) forever, so a client
+    /// starting sessions under new names could grow the list and the file without limit.
+    @Test func rememberedAssistantsAreCapped() throws {
+        let store = ClientCheckStore(url: nil)
+        store.record(ClientCheck(name: "Real assistant", transport: .relay, reach: .readable, lastSeen: Date(timeIntervalSinceNow: -3600)))
+        for i in 0..<500 { store.record(ClientCheck(name: "fake \(i)", transport: .relay, reach: .blocked)) }
+        #expect(store.all.count <= ClientCheckStore.limit)
+        #expect(store.all.contains { $0.name == "Real assistant" })   // a warning outlives a flood of others
+        #expect(store.all.contains { $0.name == "fake 499" })
+
+        // Stateless web clients' sessions are closed after each request, so they don't pile up as "connected".
+        let h = try Harness()
+        let http = LocalHTTPServer(port: 0, token: "tok", server: h.server)
+        for i in 0..<50 {
+            var r = HTTPRequest(method: "POST", path: "/mcp")
+            r.headers = ["host": "127.0.0.1:0", "authorization": "Bearer tok"]
+            r.body = Data(#"[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"c\#(i)"}}}]"#.utf8)
+            _ = http.respond(r)
+        }
+        #expect(h.server.connectedClients.count < 5)
+    }
 }

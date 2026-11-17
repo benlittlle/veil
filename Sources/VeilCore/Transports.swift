@@ -156,6 +156,7 @@ public final class LocalHTTPServer {
             guard let msg = JSON.parse(r.body) else { return ("400 Bad Request", plain, Data("Parse error".utf8)) }
             var headers = ["Content-Type": "application/json"]
             let session: MCPServer.Session
+            var oneOff = false
             lock.lock()
             if msg["method"]?.string == "initialize" {
                 session = server.makeSession(transport: .http)
@@ -167,10 +168,12 @@ public final class LocalHTTPServer {
             } else if let sid, let s = sessions[sid] {
                 session = s
             } else {
-                // Stateless clients: one-off session.
+                // Stateless clients: one-off session, closed once answered.
                 session = server.makeSession(transport: .http)
+                oneOff = true
             }
             lock.unlock()
+            defer { if oneOff { session.close() } }
             guard let reply = session.handle(msg) else { return ("202 Accepted", [:], Data()) }
             return ("200 OK", headers, Data(reply.encoded().utf8))
         default:
