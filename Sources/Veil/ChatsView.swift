@@ -31,10 +31,12 @@ struct ChatsView: View {
 
     var list: some View {
         // Anything with access on counts as shared, reviewed or not, so it can never hide among "new".
-        let shared = filtered.filter { model.access($0.id).anyEnabled }
-        let new = filtered.filter { !model.state.reviewed.contains($0.id) && !model.access($0.id).anyEnabled }
+        // Worked out once per redraw: with thousands of chats, each pass over the list counts.
+        let all = filtered
+        let shared = all.filter { model.access($0.id).anyEnabled }
+        let new = all.filter { !model.state.isReviewed($0.id) && !model.access($0.id).anyEnabled }
         let collapse = query.isEmpty && !showAllNew && new.count > newPreview
-        let priv = filtered.filter { model.state.reviewed.contains($0.id) && !model.access($0.id).anyEnabled }
+        let priv = all.filter { model.state.isReviewed($0.id) && !model.access($0.id).anyEnabled }
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -77,7 +79,7 @@ struct ChatsView: View {
                         SectionLabel(text: "Private").padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
                         ForEach(priv) { row($0) }
                     }
-                    if filtered.isEmpty {
+                    if all.isEmpty {
                         Text(query.isEmpty ? "No chats yet." : "No chats match “\(query)”.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).padding(20)
                     }
@@ -198,7 +200,7 @@ struct ChatDetail: View {
                     ChatStatusBadge(access: a)
                 }
 
-                if !model.state.reviewed.contains(chat.id) {
+                if !model.state.isReviewed(chat.id) {
                     HStack(spacing: 10) {
                         Image(systemName: "sparkle").foregroundStyle(Theme.accent)
                         Text("New chat. Everything is off until you decide.").font(.system(size: 12))

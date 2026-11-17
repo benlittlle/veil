@@ -48,6 +48,25 @@ struct ReliabilityTests {
         #expect(f.fake.calls.isEmpty)
     }
 
+    // MARK: Large histories
+
+    @Test func reviewedLookupMatchesTheListForThousandsOfChats() throws {
+        var s = PermissionState()
+        let ids = (0..<5000).map { i in i % 3 == 0 ? "chat\(i * 7919)" : "+1555\(String(format: "%07d", i * 31))" }
+        s.markReviewed(ids.enumerated().filter { $0.offset % 2 == 0 }.map(\.element))
+        s.markReviewed(["alex@example.com", "Ünïcode@example.com"])
+        for id in ids + ["alex@example.com", "Ünïcode@example.com", "", "zzz", "+1", "chat"] {
+            #expect(s.isReviewed(id) == s.reviewed.contains(id), "\(id)")
+        }
+        // Survives a round trip through the signed file.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("veil-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let secrets = MemorySecretStore()
+        try PermissionStore(url: url, secrets: secrets).update { $0 = s }
+        let loaded = PermissionStore(url: url, secrets: secrets).state
+        #expect(ids.allSatisfy { loaded.isReviewed($0) == s.isReviewed($0) })
+    }
+
     // MARK: Watching chat.db
 
     @Test func watcherPicksUpTheDatabaseOnceItCanBeOpened() async throws {

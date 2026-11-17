@@ -329,6 +329,17 @@ public struct PermissionState: Codable, Equatable, Sendable {
         reviewed = Array(Set(reviewed).union(ids)).sorted()
     }
 
+    /// Whether the user has looked at a chat. A binary search (`reviewed` is kept sorted), so the chat list
+    /// can ask for every one of thousands of chats on each redraw.
+    public func isReviewed(_ id: String) -> Bool {
+        var lo = 0, hi = reviewed.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if reviewed[mid] < id { lo = mid + 1 } else { hi = mid }
+        }
+        return lo < reviewed.count && reviewed[lo] == id
+    }
+
     /// The single source of truth for policy decisions. Hidden or paused means nothing, and so does a
     /// share whose time limit has run out, even before the lock has been written to the file.
     public func access(_ chatID: String, now: Date = Date()) -> ChatAccess {

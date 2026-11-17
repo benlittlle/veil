@@ -721,7 +721,7 @@ final class AppModel: ObservableObject {
         if glyph.style != style { glyph.style = style }
     }
 
-    var newChats: [Conversation] { conversations.filter { !state.reviewed.contains($0.id) } }
+    var newChats: [Conversation] { conversations.filter { !state.isReviewed($0.id) } }
     var sharedCount: Int { conversations.filter { access($0.id).anyEnabled }.count }
     var waitingSends: [SendRequest] { sends.filter { $0.status == .waiting } }
 
