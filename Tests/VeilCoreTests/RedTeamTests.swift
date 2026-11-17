@@ -239,4 +239,32 @@ struct RedTeamTests {
         #expect(dirMode == 0o700)
         #expect(sockMode == 0o600)
     }
+
+    // MARK: - The local web address
+
+    /// The body (up to 8 MB) was read before the Host, Origin and token checks, so anything that can reach
+    /// the port, a web page included, could make Veil wait for and hold 8 MB per connection without a token.
+    @Test func httpRefusesBeforeReadingTheBody() throws {
+        let h = try Harness()
+        var started: LocalHTTPServer?
+        for _ in 0..<20 where started == nil {
+            let s = LocalHTTPServer(port: UInt16.random(in: 40000...60000), token: "tok", server: h.server)
+            if (try? s.start()) != nil { started = s }
+        }
+        let http = try #require(started)
+        defer { http.stop() }
+        let fd = socket(AF_INET, SOCK_STREAM, 0); defer { close(fd) }
+        var tv = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET); addr.sin_port = http.port.bigEndian; addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let rc = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        try #require(rc == 0)
+        writeAll(fd, Data("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:\(http.port)\r\nContent-Type: text/plain\r\nContent-Length: 8000000\r\n\r\n".utf8))
+        let start = Date()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let n = read(fd, &buf, buf.count)
+        #expect(n > 0 && String(decoding: buf[0..<max(n, 0)], as: UTF8.self).hasPrefix("HTTP/1.1 401"))
+        #expect(Date().timeIntervalSince(start) < 3)
+    }
 }

@@ -120,14 +120,16 @@ public final class LocalHTTPServer {
         var nosig: Int32 = 1
         setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
         defer { close(c) }
-        guard let req = HTTPRequest.read(c) else { return }
+        // Host, Origin and the token are checked as soon as the headers are in, before any body is read.
+        guard let req = HTTPRequest.read(c, admit: { self.refusal($0) == nil }) else { return }
         let (status, headers, body) = respond(req)
         var head = "HTTP/1.1 \(status)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
         for (k, v) in headers { head += "\(k): \(v)\r\n" }
         writeAll(c, Data((head + "\r\n").utf8) + body)
     }
 
-    func respond(_ r: HTTPRequest) -> (String, [String: String], Data) {
+    /// The answer for a request that fails the Host, Origin or token check (headers only), or nil.
+    func refusal(_ r: HTTPRequest) -> (String, [String: String], Data)? {
         let plain = ["Content-Type": "text/plain"]
         let host = r.headers["host"] ?? ""
         guard host == "127.0.0.1:\(port)" || host == "localhost:\(port)" else { return ("421 Misdirected Request", plain, Data("Bad host".utf8)) }
@@ -137,6 +139,12 @@ public final class LocalHTTPServer {
         let given = Data((r.headers["authorization"] ?? "").utf8)
         let expected = Data("Bearer \(token)".utf8)
         guard SHA256.hash(data: given) == SHA256.hash(data: expected) else { return ("401 Unauthorized", plain, Data("Missing or wrong token".utf8)) }
+        return nil
+    }
+
+    func respond(_ r: HTTPRequest) -> (String, [String: String], Data) {
+        let plain = ["Content-Type": "text/plain"]
+        if let refused = refusal(r) { return refused }
         guard r.path == "/mcp" else { return ("404 Not Found", plain, Data()) }
 
         let sid = r.headers["mcp-session-id"]
@@ -174,7 +182,8 @@ public final class LocalHTTPServer {
 struct HTTPRequest {
     var method = "", path = "", headers: [String: String] = [:], body = Data()
 
-    static func read(_ c: Int32) -> HTTPRequest? {
+    /// Reads one request. When `admit` turns the headers down, the body isn't read (it comes back empty).
+    static func read(_ c: Int32, admit: (HTTPRequest) -> Bool = { _ in true }) -> HTTPRequest? {
         var buf = Data()
         var chunk = [UInt8](repeating: 0, count: 16384)
         let sep = Data("\r\n\r\n".utf8)
@@ -194,6 +203,7 @@ struct HTTPRequest {
             guard let i = l.firstIndex(of: ":") else { continue }
             r.headers[l[..<i].lowercased()] = l[l.index(after: i)...].trimmingCharacters(in: .whitespaces)
         }
+        guard admit(r) else { return r }
         let length = min(Int(r.headers["content-length"] ?? "0") ?? 0, 8_000_000)
         r.body = Data(buf[end.upperBound...])
         while r.body.count < length {
