@@ -254,7 +254,10 @@ struct FilterReviewList: View {
     @State private var showAll = false
 
     var body: some View {
-        let items = model.filterReview[chatID] ?? []
+        let all = model.filterReview[chatID] ?? []
+        // Messages the model hasn't reached yet aren't filter decisions; they're counted, not listed.
+        let items = all.filter { !$0.pending }
+        let waiting = all.count - items.count
         let photos = model.photoReview[chatID] ?? []
         let shown = showAll ? items : Array(items.prefix(3))
         VStack(alignment: .leading, spacing: 8) {
@@ -267,6 +270,10 @@ struct FilterReviewList: View {
             }
             Text("Only you see this list. \(model.assistantName) gets [removed] or [withheld] instead, with no reason.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
+            if waiting > 0 {
+                Text("Still checking \(waiting) recent message\(waiting == 1 ? "" : "s") on this Mac. Until each one is checked, \(model.assistantName) gets [withheld] for it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if !photos.isEmpty {
                 Card {
                     ForEach(Array(photos.enumerated()), id: \.element.id) { i, item in
@@ -278,7 +285,7 @@ struct FilterReviewList: View {
             if items.isEmpty && !photos.isEmpty {
                 EmptyView()
             } else if items.isEmpty {
-                Text(model.filterReviewLoading.contains(chatID) ? "Checking recent messages…" : "Nothing filtered in recent messages.")
+                Text(model.filterReviewLoading.contains(chatID) || waiting > 0 ? "Checking recent messages…" : "Nothing filtered in recent messages.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                     .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -296,6 +303,16 @@ struct FilterReviewList: View {
             }
         }
         .onAppear { if model.filterReview[chatID] == nil { model.loadFilterReview(chatID) } }
+        // While the model works through this chat, look again every few seconds.
+        .task(id: chatID) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled else { return }
+                if model.filterReview[chatID]?.contains(where: \.pending) == true, !model.filterReviewLoading.contains(chatID) {
+                    model.loadFilterReview(chatID)
+                }
+            }
+        }
     }
 
     func photoRow(_ item: Gate.PhotoReviewItem) -> some View {

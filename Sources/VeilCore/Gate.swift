@@ -271,6 +271,8 @@ public final class Gate {
         public let reasons: [FilterCategory]
         /// Withheld because the model couldn't clear it.
         public let notCleared: Bool
+        /// Withheld only because the model hasn't reached it yet. Not a filter decision.
+        public let pending: Bool
         public let allowedByUser: Bool
     }
 
@@ -294,7 +296,7 @@ public final class Gate {
             return FilterReviewItem(id: m.id, date: m.date, from: senderLabel(m), original: m.text ?? "(no text)",
                                     shown: o.withheld ? FilterOutcome.withheldMarker : (o.text ?? ""),
                                     withheld: o.withheld, reasons: o.reasons.sorted(), notCleared: o.notCleared,
-                                    allowedByUser: allowed.contains(m.id))
+                                    pending: o.pending, allowedByUser: allowed.contains(m.id))
         }
     }
 
@@ -356,7 +358,7 @@ public final class Gate {
 
     /// Checks recent messages and photos in filtered chats ahead of time, so requests find verdicts
     /// in the cache. Uses its own database connection. The app calls this in the background.
-    public func warmFilterCache(perChat: Int = 200, photosPerChat: Int = 40) {
+    public func warmFilterCache(perChat: Int = 200, photosPerChat: Int = 40, newestFirst: Int = 25) {
         let text = filter.usableClassifier != nil, pictures = photos.usableClassifier != nil
         guard text || pictures else { return }
         warmLock.lock()
@@ -396,18 +398,23 @@ public final class Gate {
                 if photos.check(requests, timeout: 0).count < requests.count { complete = false }
             }
         }
-        for c in convs where text {
-            let a = state.access(c.id, now: now)
-            guard a.read || a.waiting || a.attachments, let p = state.filterPolicy(for: c.id), p.needsModel else { continue }
-            guard let msgs = try? store.messages(inChats: c.chatRowIDs, limit: perChat,
-                                                 notBefore: state.historyCutoff(c.id, now: now)) else { complete = false; continue }
-            let skip = Set(a.filterAllowedMessages)
-            let items = msgs.filter { !skip.contains($0.id) }.map { filterItem($0, store, scope) }
-            let chunk = filter.batchSize * 2
-            for start in stride(from: 0, to: items.count, by: chunk) {
-                let part = Array(items[start..<min(start + chunk, items.count)])
-                let judged = filter.classify(part, timeout: 60)
-                if judged.count < part.filter({ !$0.modelText.isEmpty }).count { complete = false }
+        // The model judges about one message a second, so a full pass over many chats takes minutes.
+        // The newest messages in every chat go first (they're what assistants ask for), then the
+        // rest. Messages already judged in the first round come from the cache in the second.
+        for depth in Set([min(newestFirst, perChat), perChat]).sorted() where text {
+            for c in convs {
+                let a = state.access(c.id, now: now)
+                guard a.read || a.waiting || a.attachments, let p = state.filterPolicy(for: c.id), p.needsModel else { continue }
+                guard let msgs = try? store.messages(inChats: c.chatRowIDs, limit: depth,
+                                                     notBefore: state.historyCutoff(c.id, now: now)) else { complete = false; continue }
+                let skip = Set(a.filterAllowedMessages)
+                let items = msgs.filter { !skip.contains($0.id) }.map { filterItem($0, store, scope) }
+                let chunk = filter.batchSize * 2
+                for start in stride(from: 0, to: items.count, by: chunk) {
+                    let part = Array(items[start..<min(start + chunk, items.count)])
+                    let judged = filter.classify(part, timeout: 60)
+                    if judged.count < part.filter({ !$0.modelText.isEmpty }).count { complete = false }
+                }
             }
         }
     }

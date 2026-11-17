@@ -74,6 +74,9 @@ public struct FilterOutcome: Equatable, Sendable {
     public var reasons: Set<FilterCategory> = []
     /// Withheld because the model couldn't clear it (unavailable, error, timeout, unsure).
     public var notCleared = false
+    /// Withheld only because the model hasn't reached it yet (it's working, and this message
+    /// hasn't failed). The assistant can't tell this apart from any other withheld message.
+    public var pending = false
     /// The user let this message through.
     public var allowedByUser = false
 
@@ -124,6 +127,9 @@ public final class ContentFilter: @unchecked Sendable {
     private var cache: [String: ModelVerdict] = [:]
     private var cacheOrder: [String] = []
     private let cacheLimit = 50_000
+    /// Messages the model was asked about and gave no answer for (error, refusal, dropped).
+    /// Kept apart from "not reached yet" so the user sees the difference. Keys only, no text.
+    private var failed: Set<String> = []
 
     public init(classifier: ContentClassifier?) { self.classifier = classifier }
 
@@ -158,6 +164,7 @@ public final class ContentFilter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if cache[key] == nil { cacheOrder.append(key) }
         cache[key] = v
+        failed.remove(key)
         if cacheOrder.count > cacheLimit {
             let drop = cacheOrder.prefix(cacheOrder.count - cacheLimit)
             for k in drop { cache[k] = nil }
@@ -166,7 +173,21 @@ public final class ContentFilter: @unchecked Sendable {
     }
 
     public var cachedCount: Int { lock.lock(); defer { lock.unlock() }; return cache.count }
-    public func clearCache() { lock.lock(); cache = [:]; cacheOrder = []; lock.unlock() }
+    public func clearCache() { lock.lock(); cache = [:]; cacheOrder = []; failed = []; lock.unlock() }
+
+    private func markFailed(_ keys: [String]) {
+        guard !keys.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        if failed.count > cacheLimit { failed = [] }
+        failed.formUnion(keys)
+    }
+
+    /// True if the model was asked about this message and gave no answer the last time.
+    func didFail(_ item: Item, engine: String) -> Bool {
+        let k = cacheKey(item, engine: engine)
+        lock.lock(); defer { lock.unlock() }
+        return failed.contains(k)
+    }
 
     // MARK: Classification
 
@@ -206,16 +227,21 @@ public final class ContentFilter: @unchecked Sendable {
         // that never calls back only costs this request its deadline.
         let flight = Flight(max: Self.maxInFlight)
         let keep: @Sendable (ModelVerdict, String) -> Void = { [weak self] v, k in self?.store(v, for: k) }
+        let fail: @Sendable ([String]) -> Void = { [weak self] keys in self?.markFailed(keys) }
         DispatchQueue.global(qos: .userInitiated).async {
             defer { flight.doneLaunching() }
             for batch in batches {
                 guard flight.acquire(before: deadline) else { return }
                 let asked = Set(batch.map(\.id))
                 c.classify(batch.map { ClassifierItem(id: $0.id, text: $0.text) }) { result in
+                    var answered: Set<Int64> = []
                     if case .success(let verdicts) = result {
                         // Ignore ids we didn't ask about; cache each message once all its pieces are in.
-                        for (key, v) in collector.add(verdicts.filter { asked.contains($0.key) }) { keep(v, key) }
+                        let mine = verdicts.filter { asked.contains($0.key) }
+                        answered = Set(mine.keys)
+                        for (key, v) in collector.add(mine) { keep(v, key) }
                     }
+                    fail(collector.owners(of: asked.subtracting(answered)))
                     flight.release()
                 }
             }
@@ -267,6 +293,12 @@ public final class ContentFilter: @unchecked Sendable {
             return newly
         }
         func complete() -> [Int64: ModelVerdict] { lock.lock(); defer { lock.unlock() }; return done }
+
+        /// Cache keys of the messages these pieces belong to.
+        func owners(of pieceIDs: Set<Int64>) -> [String] {
+            guard !pieceIDs.isEmpty else { return [] }
+            return pieces.enumerated().filter { !pieceIDs.isDisjoint(with: $0.element) }.map { owners[$0.offset].key }
+        }
     }
 
     // MARK: Evaluation
@@ -278,13 +310,19 @@ public final class ContentFilter: @unchecked Sendable {
             let toJudge = items.filter { !allowed.contains($0.id) }
             verdicts = classify(toJudge, timeout: timeout ?? onDemandTimeout)
         }
+        let engine = policy.needsModel ? usableClassifier?.engineID : nil
         var out: [Int64: FilterOutcome] = [:]
-        for i in items { out[i.id] = decide(i, policy: policy, verdict: verdicts[i.id], allowedByUser: allowed.contains(i.id)) }
+        for i in items {
+            let pending = engine.map { verdicts[i.id] == nil && !didFail(i, engine: $0) } ?? false
+            out[i.id] = decide(i, policy: policy, verdict: verdicts[i.id], allowedByUser: allowed.contains(i.id), pending: pending)
+        }
         return out
     }
 
     /// Applies a policy to one message, given the model's verdict (nil = none available).
-    public func decide(_ item: Item, policy: FilterPolicy, verdict: ModelVerdict?, allowedByUser: Bool = false) -> FilterOutcome {
+    /// `pending`: there's no verdict only because the model hasn't reached this message yet.
+    public func decide(_ item: Item, policy: FilterPolicy, verdict: ModelVerdict?, allowedByUser: Bool = false,
+                       pending: Bool = false) -> FilterOutcome {
         var o = FilterOutcome(text: item.text)
         for a in item.attachments { if let n = a.name { o.attachmentNames[a.id] = n } }
         if allowedByUser { o.allowedByUser = true; return o }
@@ -311,7 +349,7 @@ public final class ContentFilter: @unchecked Sendable {
                     else if l.rank >= policy.strictness.threshold.rank { o.withheld = true; o.reasons.insert(c) }
                 }
             } else {
-                o.withheld = true; o.notCleared = true
+                o.withheld = true; o.notCleared = true; o.pending = pending
             }
         }
         if o.withheld { o.text = FilterOutcome.withheldMarker; o.attachmentNames = [:] }
