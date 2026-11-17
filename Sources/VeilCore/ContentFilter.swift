@@ -367,8 +367,9 @@ public final class ContentFilter: @unchecked Sendable {
         init(max: Int) { self.max = max }
         func acquire(before deadline: Date) -> Bool {
             cond.lock(); defer { cond.unlock() }
-            guard Date() < deadline else { return false }
-            while running >= max { if !cond.wait(until: deadline) { return false } }
+            while running >= max, Date() < deadline { cond.wait(until: deadline) }
+            // A slot that frees up just as time runs out doesn't count: nothing new starts after the deadline.
+            guard running < max, Date() < deadline else { return false }
             running += 1; return true
         }
         func release() { cond.lock(); running -= 1; cond.broadcast(); cond.unlock() }
