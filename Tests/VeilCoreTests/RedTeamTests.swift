@@ -49,4 +49,52 @@ struct RedTeamTests {
         let line = #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"filter":{"categories":{"codes":"mask"}},"list":[[1,[2,"[{"]]]}}}"#
         #expect(JSON.parse(Data(line.utf8))?["params"]?["arguments"]?["filter"]?["categories"]?["codes"]?.string == "mask")
     }
+
+    // MARK: - Hidden text in messages to approve
+
+    func scalars(_ base: String, _ extra: [UInt32]) -> String {
+        var s = base
+        for v in extra { s.unicodeScalars.append(Unicode.Scalar(v)!) }
+        return s
+    }
+
+    /// Variation selectors and other default-ignorable code points draw nothing, so a manipulated assistant
+    /// could hide kilobytes (one byte per selector) behind a one-emoji message the user approves, and the
+    /// whole lot counted as a single character against the 2000-character limit.
+    @Test func hiddenPayloadsAreRefused() throws {
+        let h = try Harness()
+        let hidden: [(String, String)] = [
+            ("variation selectors carrying bytes", scalars("Sounds good 👍", (0..<3000).map { 0xE0100 + UInt32($0 % 240) })),
+            ("a run of emoji selectors", scalars("hi", Array(repeating: 0xFE0F, count: 50))),
+            ("a selector after plain text", scalars("ok", [0xFE01])),
+            ("joiners between letters", scalars("a", [0x200D]) + "b"),
+            ("a run of joiners", scalars("👍", [0x200D, 0x200D, 0x200D])),
+            ("Hangul fillers", scalars("hi", [0x3164, 0x115F, 0xFFA0])),
+            ("a grapheme joiner", scalars("hi", [0x034F]) + "x"),
+            ("a Mongolian selector", scalars("hi", [0x180B])),
+            ("a stack of accents", scalars("ok", Array(repeating: 0x0301, count: 40))),
+        ]
+        for (what, text) in hidden {
+            for tool in ["request_send", "draft_reply"] {
+                let out = h.call(tool, ["chat_id": .string(ID.mom), "text": .string(text)])
+                #expect(out.isError, "\(tool) accepted \(what)")
+                // Keep the waiting list clear, so each case is judged on its text alone.
+                h.gate.sends.filter { $0.status == .waiting }.forEach { h.gate.decline($0.id) }
+            }
+        }
+        #expect(h.gate.sends.isEmpty && h.gate.drafts.isEmpty)
+        #expect(h.sender.sent.isEmpty)
+    }
+
+    @Test func everydayTextStillGoesThrough() throws {
+        let h = try Harness(access: [ID.mom: ChatAccess(draft: true)])
+        let fine = ["❤️ see you soon", "👩🏽‍❤️‍💋‍👨🏿", "👨‍👩‍👧‍👦 dinner?", "1️⃣ 2️⃣ #️⃣", "🇬🇧 🇯🇵", "Tiếng Việt có dấu",
+                    "नमस्ते, कैसे हो?", "สวัสดีครับ", "Ça va? Größe, señor", "日本語のテキスト", "שלום עולם", "مرحبا",
+                    "ශ්‍රී ලංකා", "क्‍ष"]
+        for text in fine {
+            let out = h.call("draft_reply", ["chat_id": .string(ID.mom), "text": .string(text)])
+            #expect(!out.isError, "refused: \(text)")
+        }
+        #expect(h.gate.drafts.count == 10)   // the newest 10 are kept per chat
+    }
 }

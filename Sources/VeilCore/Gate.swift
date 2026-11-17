@@ -1088,10 +1088,7 @@ public final class Gate {
         }
         guard t.count <= 2000 else { throw Denied(message: "That message is too long (2000 characters max).") }
         // Keep the approval prompt honest: no hidden or direction-changing characters, no walls of blank lines.
-        let hidden = t.unicodeScalars.contains { s in
-            (s.properties.generalCategory == .control && s != "\n" && s != "\t") || s.properties.generalCategory == .format && s != "\u{200D}"
-        }
-        guard !hidden else { throw Denied(message: "That message contains invisible formatting characters. Use plain text.") }
+        guard !Self.hasHiddenText(t) else { throw Denied(message: "That message contains invisible formatting characters. Use plain text.") }
         // Unicode line and paragraph separators break lines like \n does, so they'd slip past the limit below.
         let separators = t.unicodeScalars.contains { [.lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory) }
         guard !separators else { throw Denied(message: "That message contains special line or paragraph separators. Use ordinary line breaks.") }
@@ -1099,6 +1096,35 @@ public final class Gate {
             throw Denied(message: "That message has too many line breaks.")
         }
         return t
+    }
+
+    /// Code points in a character beyond this are refused: they pile up out of sight (or over other text) and
+    /// a whole stack still counts as one character. The longest emoji sequences use 10.
+    static let maxScalarsPerCharacter = 12
+
+    /// True when part of the text wouldn't be seen in the approval prompt: control and formatting characters,
+    /// and anything else that draws nothing (variation selectors, fillers, joiners), which could carry a hidden
+    /// payload. Allowed: tab and line feed, one emoji style selector right after an emoji, a joiner between
+    /// two emoji (as in 👨‍👩‍👧), and a joiner after a virama, which some scripts need (as in ශ්‍රී).
+    static func hasHiddenText(_ t: String) -> Bool {
+        if t.contains(where: { $0.unicodeScalars.count > maxScalarsPerCharacter }) { return true }
+        let s = Array(t.unicodeScalars)
+        func emoji(_ i: Int) -> Bool { i >= 0 && i < s.count && s[i].properties.isEmoji && !s[i].properties.isDefaultIgnorableCodePoint }
+        for (i, u) in s.enumerated() {
+            let p = u.properties
+            if p.generalCategory == .control { if u == "\n" || u == "\t" { continue }; return true }
+            if u == "\u{FE0E}" || u == "\u{FE0F}" { if emoji(i - 1) { continue }; return true }
+            if u == "\u{200D}" {
+                // Between two emoji, and the one before may carry a style selector (❤️ in 👩‍❤️‍👨).
+                let before = i >= 2 && (s[i - 1] == "\u{FE0F}") ? i - 2 : i - 1
+                if emoji(before) && s[before].value > 0x7F && emoji(i + 1) && s[i + 1].value > 0x7F { continue }
+                if i > 0, s[i - 1].properties.canonicalCombiningClass == .virama, i + 1 < s.count,
+                   !s[i + 1].properties.isDefaultIgnorableCodePoint { continue }
+                return true
+            }
+            if p.generalCategory == .format || p.isDefaultIgnorableCodePoint { return true }
+        }
+        return false
     }
 
     static func labels(_ a: ChatAccess) -> [String] {
