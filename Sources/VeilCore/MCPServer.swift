@@ -58,7 +58,11 @@ public final class MCPServer {
 
     func handle(_ msg: JSON, session: Session) -> JSON? {
         if case .array(let batch) = msg {
-            let replies = batch.compactMap { handle($0, session: session) }
+            // One level only: an array inside a batch isn't a request.
+            let replies = batch.compactMap { m -> JSON? in
+                if case .array = m { return error(nil, -32600, "Invalid request") }
+                return handle(m, session: session)
+            }
             return replies.isEmpty ? nil : .array(replies)
         }
         guard let method = msg["method"]?.string else {

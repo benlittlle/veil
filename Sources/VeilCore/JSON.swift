@@ -50,5 +50,31 @@ public enum JSON: Codable, Equatable, Sendable, ExpressibleByStringLiteral, Expr
         return String(decoding: (try? e.encode(self)) ?? Data("null".utf8), as: UTF8.self)
     }
 
-    public static func parse(_ data: Data) -> JSON? { try? JSONDecoder().decode(JSON.self, from: data) }
+    /// Deeper input is refused before decoding. Decoding recurses once per level, and the threads that
+    /// serve connections have small stacks, so a short line of brackets could otherwise crash Veil.
+    /// MCP messages are a handful of levels deep.
+    public static let maxDepth = 64
+
+    public static func parse(_ data: Data) -> JSON? {
+        guard withinDepth(data, maxDepth) else { return nil }
+        return try? JSONDecoder().decode(JSON.self, from: data)
+    }
+
+    /// True when arrays and objects nest at most `limit` levels (brackets inside strings don't count).
+    static func withinDepth(_ data: Data, _ limit: Int) -> Bool {
+        var depth = 0, inString = false, escaped = false
+        for b in data {
+            if inString {
+                if escaped { escaped = false } else if b == 0x5C { escaped = true } else if b == 0x22 { inString = false }
+                continue
+            }
+            switch b {
+            case 0x22: inString = true
+            case 0x5B, 0x7B: depth += 1; if depth > limit { return false }
+            case 0x5D, 0x7D: depth -= 1
+            default: break
+            }
+        }
+        return true
+    }
 }
