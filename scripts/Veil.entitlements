@@ -4,5 +4,7 @@
 <dict>
   <!-- Sending goes through Messages via AppleScript, only after the user clicks Send. -->
   <key>com.apple.security.automation.apple-events</key><true/>
+  <!-- Contact names in the chat list. The hardened runtime refuses Contacts without this, silently. -->
+  <key>com.apple.security.personal-information.addressbook</key><true/>
 </dict>
 </plist>

@@ -111,6 +111,21 @@ codesign --force --sign "$IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$APP/Contents
 codesign --force --sign "$IDENTITY" ${SIGN_FLAGS[@]+"${SIGN_FLAGS[@]}"} --identifier "$BUNDLE_ID.mcp" "$APP/Contents/MacOS/veil-mcp"
 codesign --force --sign "$IDENTITY" ${SIGN_FLAGS[@]+"${SIGN_FLAGS[@]}"} "$APP"
 codesign --verify --deep --strict "$APP"
+# Under the hardened runtime, every permission the app asks for also needs its entitlement, or
+# macOS refuses it without showing a prompt. Fail the build rather than ship that.
+if [[ "$IDENTITY" == "Developer ID Application:"* ]]; then
+  ENTS=build/entitlements-check.plist
+  codesign -d --entitlements - --xml "$APP" 2>/dev/null >"$ENTS"
+  for pair in NSContactsUsageDescription:com.apple.security.personal-information.addressbook \
+              NSAppleEventsUsageDescription:com.apple.security.automation.apple-events; do
+    key=${pair%%:*}; ent=${pair#*:}
+    if /usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist" >/dev/null 2>&1 &&
+       [ "$(/usr/libexec/PlistBuddy -c "Print :$ent" "$ENTS" 2>/dev/null)" != "true" ]; then
+      echo "error: Info.plist has $key but the app isn't signed with $ent" >&2; exit 1
+    fi
+  done
+  rm -f "$ENTS"
+fi
 echo "Built $APP"
 
 if [ "${1:-}" = "--install" ]; then
