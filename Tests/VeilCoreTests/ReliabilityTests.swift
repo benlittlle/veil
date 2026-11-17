@@ -33,6 +33,7 @@ struct ReliabilityTests {
         // The user sees why in the review screen, and can let it through.
         let item = try #require(try f.gate.filterReview(chatID: ID.alex).first { $0.id == f.ids["huge"] })
         #expect(item.withheld && item.notCleared)
+        #expect(!item.pending, "a message that's never sent to the model isn't 'still checking'")
         try f.gate.setFilterAllowed(true, message: try #require(f.ids["huge"]), in: ID.alex)
         #expect(f.text(of: "huge") == huge.trimmingCharacters(in: .whitespaces))
     }

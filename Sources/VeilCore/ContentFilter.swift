@@ -323,7 +323,7 @@ public final class ContentFilter: @unchecked Sendable {
         let engine = policy.needsModel ? usableClassifier?.engineID : nil
         var out: [Int64: FilterOutcome] = [:]
         for i in items {
-            let pending = engine.map { verdicts[i.id] == nil && !didFail(i, engine: $0) } ?? false
+            let pending = engine.map { verdicts[i.id] == nil && i.judgeable && !didFail(i, engine: $0) } ?? false
             out[i.id] = decide(i, policy: policy, verdict: verdicts[i.id], allowedByUser: allowed.contains(i.id), pending: pending)
         }
         return out
