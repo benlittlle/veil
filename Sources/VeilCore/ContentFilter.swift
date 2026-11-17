@@ -109,6 +109,12 @@ public final class ContentFilter: @unchecked Sendable {
         var modelText: String {
             ([text ?? ""] + attachments.compactMap(\.name)).filter { !$0.isEmpty }.joined(separator: "\n")
         }
+        /// Sent to the model: there's something to judge, and it's short enough to judge in one go.
+        /// Anything longer gets no verdict, so it's withheld (the user can still let it through).
+        var judgeable: Bool {
+            let t = modelText
+            return !t.isEmpty && t.count <= ContentFilter.maxJudgedChars
+        }
     }
 
     public let classifier: ContentClassifier?
@@ -120,6 +126,10 @@ public final class ContentFilter: @unchecked Sendable {
     static let maxInFlight = 2
     /// Longest text per model call. Longer messages are judged in overlapping pieces.
     public static let maxModelChars = 1200
+    /// Longest message the model is asked about: one batch of pieces. A longer one (a pasted document,
+    /// say) would keep the model busy for every request and every background pass, so it's never sent:
+    /// it gets no verdict and is withheld, unless every topic is set to Allow or the user lets it through.
+    public static let maxJudgedChars = 8000
     /// How long a request waits for uncached messages before withholding them.
     public var onDemandTimeout: TimeInterval = 4
 
@@ -200,7 +210,7 @@ public final class ContentFilter: @unchecked Sendable {
         var out: [Int64: ModelVerdict] = [:]
         var misses: [(Item, String)] = []
         lock.lock()
-        for i in items where !i.modelText.isEmpty {
+        for i in items where i.judgeable {
             let k = cacheKey(i, engine: engine)
             if let v = cache[k] { out[i.id] = v } else { misses.append((i, k)) }
         }
