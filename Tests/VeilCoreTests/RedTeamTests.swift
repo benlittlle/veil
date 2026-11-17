@@ -304,4 +304,27 @@ struct RedTeamTests {
         // An ordinary photo still converts.
         #expect(Gate.jpeg(try Self.hugePNG(width: 400, height: 300)) != nil)
     }
+
+    // MARK: - What "last activity" counts
+
+    /// `list_chats` took a chat's last activity from every row Messages links to it, tapbacks and system
+    /// events included, so an activity-only chat gave away when someone reacted (which chat_activity never
+    /// shows), and a reaction moved the chat up the list.
+    @Test func lastActivityCountsRealMessagesOnly() throws {
+        let h = try Harness(access: [ID.alex: ChatAccess(activity: true), ID.climbing: ChatAccess(read: true)])
+        let db = try SQLiteDB(path: h.dir.appendingPathComponent("chat.db").path, readOnly: false)
+        let when = appleTimestamp(Date().addingTimeInterval(-600))
+        for (id, chat, kind) in [(9001, 3, "associated_message_type"), (9002, 6, "item_type")] as [(Int64, Int64, String)] {
+            try db.query("INSERT INTO message (ROWID, guid, text, handle_id, date, is_from_me, \(kind)) VALUES (?, ?, 'Loved “x”', 2, ?, 0, ?)",
+                         [.int(id), .text("R-\(id)"), .int(when), .int(kind == "item_type" ? 2 : 2000)])
+            try db.query("INSERT INTO chat_message_join VALUES (?, ?, ?)", [.int(chat), .int(id), .int(when)])
+        }
+        let chats = h.call("list_chats").json["chats"]?.array ?? []
+        let activity = h.call("chat_activity", ["chat_id": .string(ID.alex)]).json
+        let alex = try #require(chats.first { $0["chat_id"]?.string == ID.alex })
+        #expect(alex["last_activity"] == activity["messages"]?.array?.last?["time"])
+        let crew = try #require(chats.first { $0["chat_id"]?.string == ID.climbing })
+        let read = h.call("read_chat", ["chat_id": .string(ID.climbing)]).json
+        #expect(crew["last_activity"] == read["messages"]?.array?.last?["time"])
+    }
 }

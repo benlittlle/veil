@@ -578,12 +578,17 @@ public final class Gate {
             }
             // Only chats with read/waiting access reveal activity, and only inside their history window, so
             // only those are ordered by it. Everything else is sorted by name, so the order can't hint at
-            // new messages, or at older ones outside a window.
-            let visibleLast = { (c: Conversation) -> Date? in
+            // new messages, or at older ones outside a window. The time is the last real message's, from the
+            // same metadata query as chat_activity: Messages' own last-activity time also counts tapbacks and
+            // system events, which no tool shows.
+            var lastShown: [String: Date] = [:]
+            for c in shown {
                 let a = state.access(c.id)
-                guard a.read || a.waiting || a.activity, let d = c.lastActivity, inWindow(d, c) else { return nil }
-                return d
+                guard a.read || a.waiting || a.activity, c.lastActivity != nil,
+                      let d = try store.activity(inChats: c.chatRowIDs, limit: 1, notBefore: cutoff(c)).first?.date, inWindow(d, c) else { continue }
+                lastShown[c.id] = d
             }
+            let visibleLast = { (c: Conversation) -> Date? in lastShown[c.id] }
             let byName = { (x: Conversation, y: Conversation) in (x.displayName.lowercased(), x.id) < (y.displayName.lowercased(), y.id) }
             let ordered = shown.filter { visibleLast($0) != nil }.sorted { (visibleLast($0)!, $0.id) > (visibleLast($1)!, $1.id) }
                 + shown.filter { visibleLast($0) == nil }.sorted(by: byName)
