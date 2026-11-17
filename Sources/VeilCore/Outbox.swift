@@ -17,7 +17,7 @@ public struct SendRequest: Identifiable, Equatable, Sendable {
             case .waiting: return "waiting_for_approval"
             case .sending: return "sending"
             case .sent: return "sent"
-            case .declined: return "declined_by_ben"
+            case .declined: return "declined"
             case .failed(let m): return "failed: \(m)"
             case .cancelled(let m): return "cancelled: \(m)"
             }

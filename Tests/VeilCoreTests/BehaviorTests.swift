@@ -114,7 +114,7 @@ struct SendingTests {
         h.gate.decline(id)
         h.gate.approve(id)
         #expect(h.sender.sent.isEmpty)
-        #expect(h.call("check_send_status", ["request_id": .string(id)]).json["status"]?.string == "declined_by_ben")
+        #expect(h.call("check_send_status", ["request_id": .string(id)]).json["status"]?.string == "declined")
     }
 
     @Test func sendNeedsItsOwnToggle() throws {
